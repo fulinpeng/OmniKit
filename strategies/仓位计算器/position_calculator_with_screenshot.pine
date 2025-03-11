@@ -170,5 +170,3 @@ if show_table and barstate.islast
          tooltip="单位数量: " + units_value_str + "\n(选中文本后 Ctrl+C 复制)")
 
 // ==================== 绘图输出（用于数据导出） ====================
-
-plot(final_position_size, "单笔仓位大小", color=color.new(color.blue, 100), display=display.data_window)
