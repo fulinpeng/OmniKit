@@ -172,6 +172,3 @@ if show_table and barstate.islast
 // ==================== 绘图输出（用于数据导出） ====================
 
 plot(final_position_size, "单笔仓位大小", color=color.new(color.blue, 100), display=display.data_window)
-plot(position_units, "单位数量", color=color.new(color.green, 100), display=display.data_window)
-
-
