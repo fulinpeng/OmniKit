@@ -168,5 +168,3 @@ if show_table and barstate.islast
     table.cell(result_table, 1, 6, units_value_str, 
          text_color=table_text_color, text_size=size.large, text_halign=text.align_right,
          tooltip="单位数量: " + units_value_str + "\n(选中文本后 Ctrl+C 复制)")
-
-// ==================== 绘图输出（用于数据导出） ====================
