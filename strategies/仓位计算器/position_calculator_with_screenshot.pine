@@ -165,6 +165,3 @@ if show_table and barstate.islast
          text_color=table_text_color, text_size=size.normal, text_halign=text.align_left)
     // 显示纯数字便于复制
     units_value_str = str.tostring(position_units, "#.####")
-    table.cell(result_table, 1, 6, units_value_str, 
-         text_color=table_text_color, text_size=size.large, text_halign=text.align_right,
-         tooltip="单位数量: " + units_value_str + "\n(选中文本后 Ctrl+C 复制)")
