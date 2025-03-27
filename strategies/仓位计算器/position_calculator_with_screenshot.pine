@@ -50,6 +50,8 @@ stop_loss_ratio = math.abs(stop_loss_price - entry_price) / entry_price
 // 解出: 单笔持仓价值 = (账户总资金 × 最大风险比例) ÷ 止损比例
 max_position_size = stop_loss_ratio > 0 ? (account_size * (max_risk_pct / 100)) / stop_loss_ratio : 0
 
+// 计算实际可承受的最大风险金额
+max_risk_amount = account_size * (max_risk_pct / 100)
 
 // 检查仓位是否超过账户总额
 is_over_account_limit = max_position_size > account_size
@@ -119,13 +121,13 @@ if show_table and barstate.islast
          border_color=header_bg_color)
     
     // 清空表格
-    table.clear(result_table, 0, 0, 1, 6)
+    // table.clear(result_table, 0, 0, 1, 6)
     
     // 标题
-    table.cell(result_table, 0, 0, "智能仓位计算器", 
-         text_color=table_text_color, bgcolor=header_bg_color, 
-         text_size=size.normal, text_halign=text.align_center)
-    table.merge_cells(result_table, 0, 0, 1, 0)
+    // table.cell(result_table, 0, 0, "智能仓位计算器", 
+    //      text_color=table_text_color, bgcolor=header_bg_color, 
+    //      text_size=size.normal, text_halign=text.align_center)
+    // table.merge_cells(result_table, 0, 0, 1, 0)
     
     // 输入参数部分
     table.cell(result_table, 0, 1, "输入参数", 
@@ -142,10 +144,4 @@ if show_table and barstate.islast
          text_color=table_text_color, text_size=size.small, text_halign=text.align_left)
     table.cell(result_table, 1, 3, str.tostring(max_risk_pct, "#.##") + "%", 
          text_color=table_text_color, text_size=size.small, text_halign=text.align_right)
-    
-    // 核心计算结果部分
-    table.cell(result_table, 0, 4, "核心计算结果", 
-         text_color=table_text_color, bgcolor=header_bg_color, 
-         text_size=size.small, text_halign=text.align_left)
-    table.merge_cells(result_table, 0, 4, 1, 4)
     
