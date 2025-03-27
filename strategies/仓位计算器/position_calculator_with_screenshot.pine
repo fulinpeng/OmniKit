@@ -94,11 +94,11 @@ if show_lines and barstate.islast
          style=label.style_label_left, color=color.blue, textcolor=color.white, size=size.small)
     
     // 绘制止损线
-    stop_line := line.new(bar_index - 50, stop_loss_price, bar_index + 50, stop_loss_price, 
-         color=color.new(color.red, 0), width=2, style=line.style_dashed)
-    stop_label := label.new(bar_index + 50, stop_loss_price, 
-         text="止损: " + str.tostring(stop_loss_price, format.mintick), 
-         style=label.style_label_left, color=color.red, textcolor=color.white, size=size.small)
+    // stop_line := line.new(bar_index - 50, stop_loss_price, bar_index + 50, stop_loss_price, 
+    //      color=color.new(color.red, 0), width=2, style=line.style_dashed)
+    // stop_label := label.new(bar_index + 50, stop_loss_price, 
+    //      text="止损: " + str.tostring(stop_loss_price, format.mintick), 
+    //      style=label.style_label_left, color=color.red, textcolor=color.white, size=size.small)
 
 
 // ==================== 显示结果表格 ====================
@@ -122,10 +122,4 @@ if show_table and barstate.islast
     
     // 清空表格
     table.clear(result_table, 0, 0, 1, 6)
-    
-    // 标题
-    table.cell(result_table, 0, 0, "智能仓位计算器", 
-         text_color=table_text_color, bgcolor=header_bg_color, 
-         text_size=size.normal, text_halign=text.align_center)
-    table.merge_cells(result_table, 0, 0, 1, 0)
     
