@@ -169,11 +169,3 @@ if show_table and barstate.islast
          text_color=table_text_color, text_size=size.large, text_halign=text.align_right,
          tooltip="单位数量: " + units_value_str + "\n(选中文本后 Ctrl+C 复制)")
 
-// ==================== 绘图输出（用于数据导出） ====================
-
-plot(final_position_size, "单笔仓位大小", color=color.new(color.blue, 100), display=display.data_window)
-plot(position_units, "单位数量", color=color.new(color.green, 100), display=display.data_window)
-plot(stop_loss_ratio * 100, "止损比例(%)", color=color.new(color.red, 100), display=display.data_window)
-plot(entry_price, "入场价格", color=color.new(color.blue, 100), display=display.data_window)
-
-
