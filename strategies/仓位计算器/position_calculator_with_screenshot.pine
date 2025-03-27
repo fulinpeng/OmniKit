@@ -160,7 +160,3 @@ if show_table and barstate.islast
          text_color=table_text_color, text_size=size.large, text_halign=text.align_right,
          tooltip="仓位大小: $" + position_value_str + "\n(选中文本后 Ctrl+C 复制)")
     
-    // 单位数量
-    table.cell(result_table, 0, 6, "单位数量", 
-         text_color=table_text_color, text_size=size.normal, text_halign=text.align_left)
-
