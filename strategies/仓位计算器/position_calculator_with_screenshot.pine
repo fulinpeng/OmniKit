@@ -121,27 +121,11 @@ if show_table and barstate.islast
          border_color=header_bg_color)
     
     // 清空表格
-    // table.clear(result_table, 0, 0, 1, 6)
+    table.clear(result_table, 0, 0, 1, 6)
     
     // 标题
-    // table.cell(result_table, 0, 0, "智能仓位计算器", 
-    //      text_color=table_text_color, bgcolor=header_bg_color, 
-    //      text_size=size.normal, text_halign=text.align_center)
-    // table.merge_cells(result_table, 0, 0, 1, 0)
-    
-    // 输入参数部分
-    table.cell(result_table, 0, 1, "输入参数", 
+    table.cell(result_table, 0, 0, "智能仓位计算器", 
          text_color=table_text_color, bgcolor=header_bg_color, 
-         text_size=size.small, text_halign=text.align_left)
-    table.merge_cells(result_table, 0, 1, 1, 1)
-    
-    table.cell(result_table, 0, 2, "总账户大小", 
-         text_color=table_text_color, text_size=size.small, text_halign=text.align_left)
-    table.cell(result_table, 1, 2, "$" + str.tostring(account_size, "#,###.##"), 
-         text_color=table_text_color, text_size=size.small, text_halign=text.align_right)
-    
-    table.cell(result_table, 0, 3, "最大风险", 
-         text_color=table_text_color, text_size=size.small, text_halign=text.align_left)
-    table.cell(result_table, 1, 3, str.tostring(max_risk_pct, "#.##") + "%", 
-         text_color=table_text_color, text_size=size.small, text_halign=text.align_right)
+         text_size=size.normal, text_halign=text.align_center)
+    table.merge_cells(result_table, 0, 0, 1, 0)
     
