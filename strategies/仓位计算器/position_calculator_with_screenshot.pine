@@ -16,6 +16,14 @@ entry_price_source = input.string("当前价格", "入场价格",
      options=["当前价格", "自定义"], group="💰 交易价格参数")
 custom_entry_price = input.float(0.0, "自定义入场价格", minval=0, step=0.01, group="💰 交易价格参数")
 
+// 止损价格设置
+custom_stop_loss = input.float(0.0, "止损价格", minval=0, step=0.01, group="💰 交易价格参数")
+
+// ==================== 第三组：显示选项 ====================
+show_table = input.bool(true, "显示计算结果表格", group="🎨 显示选项")
+show_lines = input.bool(false, "显示入场/止损线", group="🎨 显示选项")
+table_position = input.string("右上", "表格位置", 
+     options=["左上", "中上", "右上", "左下", "中下", "右下"], group="🎨 显示选项")
 
 // 颜色自定义
 table_bg_color = input.color(color.new(color.gray, 85), "表格背景颜色", group="🎨 显示选项")
@@ -32,8 +40,16 @@ entry_price = entry_price_source == "当前价格" ? close : custom_entry_price
 // 确定止损价格
 stop_loss_price = custom_stop_loss
 
-// 计算实际可承受的最大风险金额
-max_risk_amount = account_size * (max_risk_pct / 100)
+// ==================== 核心仓位计算 ====================
+
+// 计算止损比例（入场价格到止损价格的比例）
+stop_loss_ratio = math.abs(stop_loss_price - entry_price) / entry_price
+
+// 计算单笔最大持仓（根据方程式求解）
+// 方程式: 止损比例 × 单笔持仓价值 = 账户总资金 × 最大风险比例
+// 解出: 单笔持仓价值 = (账户总资金 × 最大风险比例) ÷ 止损比例
+max_position_size = stop_loss_ratio > 0 ? (account_size * (max_risk_pct / 100)) / stop_loss_ratio : 0
+
 
 // 检查仓位是否超过账户总额
 is_over_account_limit = max_position_size > account_size
@@ -133,6 +149,3 @@ if show_table and barstate.islast
          text_size=size.small, text_halign=text.align_left)
     table.merge_cells(result_table, 0, 4, 1, 4)
     
-    // 单笔仓位大小（核心 - 最突出）
-    table.cell(result_table, 0, 5, "单笔仓位大小 ($)", 
-         text_color=table_text_color, text_size=size.normal, text_halign=text.align_left)
