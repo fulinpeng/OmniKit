@@ -154,6 +154,26 @@ if show_table and barstate.islast
     // 单笔仓位大小（核心 - 最突出）
     table.cell(result_table, 0, 5, "单笔仓位大小 ($)", 
          text_color=table_text_color, text_size=size.normal, text_halign=text.align_left)
-
-
+    // 显示纯数字便于复制
+    position_value_str = str.tostring(final_position_size, "#.##")
+    table.cell(result_table, 1, 5, position_value_str, 
+         text_color=table_text_color, text_size=size.large, text_halign=text.align_right,
+         tooltip="仓位大小: $" + position_value_str + "\n(选中文本后 Ctrl+C 复制)")
     
+    // 单位数量
+    table.cell(result_table, 0, 6, "单位数量", 
+         text_color=table_text_color, text_size=size.normal, text_halign=text.align_left)
+    // 显示纯数字便于复制
+    units_value_str = str.tostring(position_units, "#.####")
+    table.cell(result_table, 1, 6, units_value_str, 
+         text_color=table_text_color, text_size=size.large, text_halign=text.align_right,
+         tooltip="单位数量: " + units_value_str + "\n(选中文本后 Ctrl+C 复制)")
+
+// ==================== 绘图输出（用于数据导出） ====================
+
+plot(final_position_size, "单笔仓位大小", color=color.new(color.blue, 100), display=display.data_window)
+plot(position_units, "单位数量", color=color.new(color.green, 100), display=display.data_window)
+plot(stop_loss_ratio * 100, "止损比例(%)", color=color.new(color.red, 100), display=display.data_window)
+plot(entry_price, "入场价格", color=color.new(color.blue, 100), display=display.data_window)
+
+
