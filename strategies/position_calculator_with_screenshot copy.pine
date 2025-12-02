@@ -1,0 +1,286 @@
+//@version=5
+indicator("智能仓位计算器 (Smart Position Size Calculator)", overlay=true)
+
+// ==================== 输入参数 ====================
+
+// ==================== 第一组：账户与风险设置 ====================
+// 仓位方向
+position_type = input.string("做多", "仓位方向", options=["做多", "做空"], group="📊 账户与风险设置")
+
+// 总账户资金
+account_size = input.float(10000.0, "总账户资金 ($)", minval=0.01, step=100, group="📊 账户与风险设置", 
+     tooltip="您的总交易资金")
+
+// 最大风险百分比
+max_risk_pct = input.float(1.0, "最大风险百分比 (%)", minval=0.01, maxval=100, step=0.1, group="📊 账户与风险设置", 
+     tooltip="单笔亏损最大不能超过仓位的百分比")
+
+// ==================== 第二组：交易价格参数 ====================
+// 入场价格设置
+entry_price_source = input.string("当前价格", "入场价格", 
+     options=["当前价格", "自定义"], group="💰 交易价格参数")
+custom_entry_price = input.float(0.0, "自定义入场价格", minval=0, step=0.01, group="💰 交易价格参数")
+
+// 止损价格设置
+custom_stop_loss = input.float(0.0, "止损价格", minval=0, step=0.01, group="💰 交易价格参数")
+
+// 止盈价格设置
+custom_target_price = input.float(0.0, "止盈价格", minval=0, step=0.01, group="💰 交易价格参数")
+
+// ==================== 第三组：显示选项 ====================
+show_table = input.bool(true, "显示计算结果表格", group="🎨 显示选项")
+show_trade_details = input.bool(true, "显示交易详情", group="🎨 显示选项", 
+     tooltip="显示止损比例、止盈比例、预计盈亏金额、盈亏比等详细信息")
+show_lines = input.bool(true, "显示入场/止损线", group="🎨 显示选项")
+table_position = input.string("右上", "表格位置", 
+     options=["左上", "中上", "右上", "左下", "中下", "右下"], group="🎨 显示选项")
+
+
+// ==================== 核心计算逻辑 ====================
+
+
+// 确定入场价格
+entry_price = entry_price_source == "当前价格" ? close : custom_entry_price
+
+// 确定止损价格
+stop_loss_price = custom_stop_loss
+
+// 确定止盈价格
+target_price = custom_target_price
+
+// ==================== 核心仓位计算 ====================
+
+// 计算止损比例（入场价格到止损价格的比例）
+stop_loss_ratio = math.abs(stop_loss_price - entry_price) / entry_price
+
+// 计算止盈比例（入场价格到止盈价格的比例）
+take_profit_ratio = math.abs(target_price - entry_price) / entry_price
+
+// 计算单笔最大持仓（根据方程式求解）
+// 方程式: 止损比例 × 单笔持仓价值 = 账户总资金 × 最大风险比例
+// 解出: 单笔持仓价值 = (账户总资金 × 最大风险比例) ÷ 止损比例
+max_position_size = stop_loss_ratio > 0 ? (account_size * (max_risk_pct / 100)) / stop_loss_ratio : 0
+
+// 计算实际可承受的最大风险金额
+max_risk_amount = account_size * (max_risk_pct / 100)
+
+// 检查仓位是否超过账户总额
+is_over_account_limit = max_position_size > account_size
+
+// 如果超过账户总额，使用账户总额
+final_position_size = is_over_account_limit ? account_size : max_position_size
+
+// 计算单位数量
+position_units = entry_price > 0 ? final_position_size / entry_price : 0
+
+// 计算盈亏比
+price_diff = math.abs(entry_price - stop_loss_price)
+target_diff = math.abs(target_price - entry_price)
+risk_reward_ratio = price_diff > 0 ? target_diff / price_diff : 0
+
+// 计算预期收益和损失
+expected_profit = position_units * target_diff
+expected_loss = position_units * price_diff
+
+// 计算账户余额变化
+target_account_balance = account_size + expected_profit
+stop_account_balance = account_size - expected_loss
+
+
+// ==================== 绘制入场线和止损线 ====================
+
+var line entry_line = na
+var line stop_line = na
+var line target_line = na
+var label entry_label = na
+var label stop_label = na
+var label target_label = na
+
+// 绘制预览线
+if show_lines and barstate.islast
+    // 删除旧的线和标签
+    if not na(entry_line)
+        line.delete(entry_line)
+    if not na(stop_line)
+        line.delete(stop_line)
+    if not na(target_line)
+        line.delete(target_line)
+    if not na(entry_label)
+        label.delete(entry_label)
+    if not na(stop_label)
+        label.delete(stop_label)
+    if not na(target_label)
+        label.delete(target_label)
+    
+    // 绘制入场线
+    entry_line := line.new(bar_index - 50, entry_price, bar_index + 50, entry_price, 
+         color=color.new(color.yellow, 0), width=2, style=line.style_dashed)
+    entry_label := label.new(bar_index + 50, entry_price, 
+         text="入场: " + str.tostring(entry_price, format.mintick), 
+         style=label.style_label_left, color=color.yellow, textcolor=color.black, size=size.small)
+    
+    // 绘制止损线
+    stop_color = position_type == "做多" ? color.red : color.green
+    stop_line := line.new(bar_index - 50, stop_loss_price, bar_index + 50, stop_loss_price, 
+         color=color.new(stop_color, 0), width=2, style=line.style_dashed)
+    stop_label := label.new(bar_index + 50, stop_loss_price, 
+         text="止损: " + str.tostring(stop_loss_price, format.mintick), 
+         style=label.style_label_left, color=stop_color, textcolor=color.white, size=size.small)
+    
+    // 绘制目标线
+    target_line := line.new(bar_index - 50, target_price, bar_index + 50, target_price, 
+         color=color.new(color.green, 0), width=2, style=line.style_dashed)
+    target_label := label.new(bar_index + 50, target_price, 
+         text="目标: " + str.tostring(target_price, format.mintick), 
+         style=label.style_label_left, color=color.green, textcolor=color.white, size=size.small)
+
+
+// ==================== 显示结果表格 ====================
+
+if show_table and barstate.islast
+    // 确定表格位置
+    table_pos = table_position == "左上" ? position.top_left : 
+         table_position == "中上" ? position.top_center : 
+         table_position == "右上" ? position.top_right : 
+         table_position == "左下" ? position.bottom_left : 
+         table_position == "中下" ? position.bottom_center : 
+         position.bottom_right
+    
+    // 根据是否显示交易详情来确定表格行数
+    table_rows = show_trade_details ? 16 : 9
+    
+    // 创建表格
+    var table result_table = table.new(table_pos, 2, table_rows, 
+         bgcolor=color.new(color.gray, 85), 
+         frame_color=color.new(color.gray, 50), 
+         frame_width=2, 
+         border_width=1, 
+         border_color=color.new(color.gray, 70))
+    
+    // 清空表格
+    table.clear(result_table, 0, 0, 1, table_rows - 1)
+    
+    // 标题
+    table.cell(result_table, 0, 0, "智能仓位计算器", 
+         text_color=color.white, bgcolor=color.new(color.blue, 30), 
+         text_size=size.normal, text_halign=text.align_center)
+    table.merge_cells(result_table, 0, 0, 1, 0)
+    
+    // 输入参数部分
+    table.cell(result_table, 0, 1, "输入参数", 
+         text_color=color.white, bgcolor=color.new(color.gray, 50), 
+         text_size=size.small, text_halign=text.align_left)
+    table.merge_cells(result_table, 0, 1, 1, 1)
+    
+    table.cell(result_table, 0, 2, "仓位方向", 
+         text_color=color.white, text_size=size.small, text_halign=text.align_left)
+    table.cell(result_table, 1, 2, position_type, 
+         text_color=position_type == "做多" ? color.green : color.red, 
+         text_size=size.small, text_halign=text.align_right)
+    
+    table.cell(result_table, 0, 3, "总账户大小", 
+         text_color=color.white, text_size=size.small, text_halign=text.align_left)
+    table.cell(result_table, 1, 3, "$" + str.tostring(account_size, "#,###.##"), 
+         text_color=color.white, text_size=size.small, text_halign=text.align_right)
+    
+    table.cell(result_table, 0, 4, "最大风险", 
+         text_color=color.white, text_size=size.small, text_halign=text.align_left)
+    table.cell(result_table, 1, 4, str.tostring(max_risk_pct, "#.##") + "%", 
+         text_color=max_risk_pct > 5 ? color.orange : color.white, 
+         text_size=size.small, text_halign=text.align_right)
+    
+    // 分隔线
+    table.cell(result_table, 0, 5, "━━━━━━━━━━━━━━━━━━━━━━━", 
+         text_color=color.gray, text_size=size.small, text_halign=text.align_center)
+    table.merge_cells(result_table, 0, 5, 1, 5)
+    
+    // 核心计算结果部分
+    table.cell(result_table, 0, 6, "🎯 核心计算结果", 
+         text_color=color.white, bgcolor=color.new(color.orange, 30), 
+         text_size=size.small, text_halign=text.align_left)
+    table.merge_cells(result_table, 0, 6, 1, 6)
+    
+    // 单笔仓位大小（核心 - 最突出）
+    table.cell(result_table, 0, 7, "单笔仓位大小 ($)", 
+         text_color=color.white, text_size=size.normal, text_halign=text.align_left)
+    position_color = is_over_account_limit ? color.red : color.lime
+    // 显示纯数字便于复制
+    position_value_str = str.tostring(final_position_size, "#.##")
+    table.cell(result_table, 1, 7, position_value_str, 
+         text_color=position_color, text_size=size.large, text_halign=text.align_right,
+         tooltip="仓位大小: $" + position_value_str + "\n(选中文本后 Ctrl+C 复制)")
+    
+    // 单位数量
+    table.cell(result_table, 0, 8, "单位数量", 
+         text_color=color.white, text_size=size.normal, text_halign=text.align_left)
+    // 显示纯数字便于复制
+    units_value_str = str.tostring(position_units, "#.####")
+    table.cell(result_table, 1, 8, units_value_str, 
+         text_color=position_color, text_size=size.large, text_halign=text.align_right,
+         tooltip="单位数量: " + units_value_str + "\n(选中文本后 Ctrl+C 复制)")
+    
+    // 交易详情（可选显示）
+    if show_trade_details
+        // 分隔线
+        table.cell(result_table, 0, 9, "━━━━━━━━━━━━━━━━━━━━━━━", 
+             text_color=color.gray, text_size=size.small, text_halign=text.align_center)
+        table.merge_cells(result_table, 0, 9, 1, 9)
+        
+        // 交易详情
+        table.cell(result_table, 0, 10, "📊 交易详情", 
+             text_color=color.white, bgcolor=color.new(color.purple, 30), 
+             text_size=size.small, text_halign=text.align_left)
+        table.merge_cells(result_table, 0, 10, 1, 10)
+        
+        // 止损比例
+        table.cell(result_table, 0, 11, "止损比例", 
+             text_color=color.white, text_size=size.small, text_halign=text.align_left)
+        table.cell(result_table, 1, 11, str.tostring(stop_loss_ratio * 100, "#.##") + "%", 
+             text_color=color.red, text_size=size.small, text_halign=text.align_right)
+        
+        // 止盈比例
+        table.cell(result_table, 0, 12, "止盈比例", 
+             text_color=color.white, text_size=size.small, text_halign=text.align_left)
+        table.cell(result_table, 1, 12, str.tostring(take_profit_ratio * 100, "#.##") + "%", 
+             text_color=color.green, text_size=size.small, text_halign=text.align_right)
+        
+        // 预计止损金额
+        table.cell(result_table, 0, 13, "预计止损金额", 
+             text_color=color.white, text_size=size.small, text_halign=text.align_left)
+        table.cell(result_table, 1, 13, "$" + str.tostring(expected_loss, "#,###.##"), 
+             text_color=color.red, text_size=size.small, text_halign=text.align_right)
+        
+        // 预计盈利金额
+        table.cell(result_table, 0, 14, "预计盈利金额", 
+             text_color=color.white, text_size=size.small, text_halign=text.align_left)
+        table.cell(result_table, 1, 14, "$" + str.tostring(expected_profit, "#,###.##"), 
+             text_color=color.green, text_size=size.small, text_halign=text.align_right)
+        
+        // 盈亏比
+        table.cell(result_table, 0, 15, "盈亏比 (R:R)", 
+             text_color=color.white, text_size=size.small, text_halign=text.align_left)
+        rr_color = risk_reward_ratio >= 2 ? color.green : risk_reward_ratio >= 1 ? color.orange : color.red
+        table.cell(result_table, 1, 15, str.tostring(risk_reward_ratio, "#.##") + ":1", 
+             text_color=rr_color, text_size=size.small, text_halign=text.align_right)
+
+// ==================== 绘图输出（用于数据导出） ====================
+
+plot(final_position_size, "单笔仓位大小", color=color.new(color.blue, 100), display=display.data_window)
+plot(position_units, "单位数量", color=color.new(color.green, 100), display=display.data_window)
+plot(stop_loss_ratio * 100, "止损比例(%)", color=color.new(color.red, 100), display=display.data_window)
+plot(entry_price, "入场价格", color=color.new(color.blue, 100), display=display.data_window)
+plot(stop_loss_price, "止损价格", color=color.new(color.red, 100), display=display.data_window)
+plot(target_price, "目标价格", color=color.new(color.green, 100), display=display.data_window)
+plot(max_risk_amount, "最大风险金额", color=color.new(color.orange, 100), display=display.data_window)
+
+// ==================== 提示信息 ====================
+
+if barstate.islast and is_over_account_limit
+    label.new(bar_index, high, 
+         text="⚠️ 仓位超过账户总额！\n已自动调整至账户总额", 
+         style=label.style_label_down, 
+         color=color.new(color.red, 0), 
+         textcolor=color.white, 
+         size=size.normal,
+         yloc=yloc.abovebar)
+

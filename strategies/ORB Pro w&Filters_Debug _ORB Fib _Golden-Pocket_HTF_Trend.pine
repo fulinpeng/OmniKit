@@ -1,0 +1,299 @@
+//@version=5
+indicator("ORB Pro w/ Filters + Debug + ORB Fib + Golden Pocket + HTF Trend (v6)", overlay=true, max_labels_count=500, max_boxes_count=50)
+
+// ================== Inputs ==================
+orbStartHour = input.int(9,  "ORB Start Hour (NY)",  minval=0, maxval=23)
+orbStartMin  = input.int(30, "ORB Start Minute (NY)", minval=0, maxval=59)
+orbEndHour   = input.int(9,  "ORB End Hour (NY)",   minval=0, maxval=23)
+orbEndMin    = input.int(45, "ORB End Minute (NY)", minval=0, maxval=59)
+
+useCloseConfirm = input.bool(true,  "Require candle CLOSE outside ORB?")
+useRetest       = input.bool(true,  "Require Retest Confirmation?")
+retestPct       = input.float(0.20, "Retest tolerance % (edge)", step=0.01)
+
+// Volume / Trend (local)
+useVolFilter   = input.bool(true, "Require Volume Spike?")
+volLen         = input.int(20, "Volume SMA Length", minval=1)
+useTrendFilter = input.bool(true, "Require Trend (EMA)?")
+emaLen         = input.int(20, "EMA Length", minval=1)
+
+// NEW: Higher-Timeframe Trend filter
+useHTFTrend       = input.bool(true, "Require Higher-TF Trend?")
+htfTf             = input.timeframe("15", "Higher TF (e.g. 15, 30, 60)")
+htfEmaLen         = input.int(50, "HTF EMA Length", minval=1)
+requireHtfSlope   = input.bool(true, "HTF EMA must slope in direction?")
+htfSlopeLookback  = input.int(1, "HTF Slope Lookback Bars", minval=1)
+
+// Cooldown
+useCooldown  = input.bool(true, "Use Cooldown Between Signals?")
+cooldownBars = input.int(10, "Cooldown Bars", minval=1)
+
+// ORB size filter (percent)
+minRange = input.float(0.3, "Min ORB % Range", step=0.1)
+maxRange = input.float(1.5, "Max ORB % Range", step=0.1)
+
+// Breakout time filter (minutes after ORB finishes)
+maxDelayMins = input.int(60, "Max Minutes After ORB", minval=1)
+
+// Session cutoff
+useSessionFilter = input.bool(false, "Limit Session Hours?")
+sessionEndHour   = input.int(12, "Session Cutoff Hour (NY)", minval=0, maxval=23)
+
+// Risk / exits (visual only)
+useRR      = input.bool(true,  "Use ORB-based R:R stops/TP?")
+rr         = input.float(2.0,  "R:R multiple", step=0.1)
+slPercent  = input.float(0.5,  "Stop Loss % (if not R:R)", step=0.1)
+tpPercent  = input.float(1.0,  "Take Profit % (if not R:R)", step=0.1)
+
+// Visuals & debug
+showBox   = input.bool(true, "Show ORB box")
+boxColor  = input.color(color.new(color.orange, 85), "ORB box color")
+showDebug = input.bool(true, "Show debug overlay (why signal blocked)")
+
+// ORB Fibonacci (visual)
+useFib      = input.bool(true,  "Plot ORB Fibonacci Levels")
+showRetrace = input.bool(true,  "Show Retracements (0.236/0.382/0.5/0.618/0.786)")
+showExt     = input.bool(false, "Show Extensions (1.272/1.618)")
+fibColor    = input.color(color.new(color.teal, 0), "Fib Color")
+
+// Golden Pocket retest
+useGoldenPocketRetest = input.bool(true,  "Require Golden Pocket Retest (0.5–0.618)")
+gpTolPct              = input.float(0.20, "Golden Pocket tolerance % (of ORB range)", minval=0.0, step=0.01)
+
+// ================== NY Time ==================
+nyHour = hour(time, "America/New_York")
+nyMin  = minute(time, "America/New_York")
+
+isSessionStart = (nyHour == orbStartHour and nyMin == orbStartMin)
+inORB = ((nyHour > orbStartHour and nyHour < orbEndHour) or
+         (nyHour == orbStartHour and nyMin >= orbStartMin) or
+         (nyHour == orbEndHour and nyMin < orbEndMin))
+
+// ================== ORB Build / Reset ==================
+var float orbHigh = na
+var float orbLow  = na
+var bool  orbSet  = false
+var bool  longBroke = false
+var bool  shortBroke = false
+var int   lastSignalBar = na
+var int   orbEndBar = na
+var box   orbBox = na
+var label dbg = na
+
+if isSessionStart
+    orbHigh := na
+    orbLow  := na
+    orbSet  := false
+    longBroke := false
+    shortBroke := false
+    lastSignalBar := na
+    orbEndBar := na
+    if not na(orbBox)
+        box.delete(orbBox)
+        orbBox := na
+    if not na(dbg)
+        label.delete(dbg)
+        dbg := na
+
+if inORB
+    orbHigh := na(orbHigh) ? high : math.max(orbHigh, high)
+    orbLow  := na(orbLow)  ? low  : math.min(orbLow, low)
+else if not orbSet and not na(orbHigh) and not na(orbLow)
+    orbSet := true
+    orbEndBar := bar_index
+
+currHigh = orbSet ? orbHigh : na
+currLow  = orbSet ? orbLow  : na
+
+// ================== Local Filters ==================
+avgVol   = ta.sma(volume, volLen)
+volOK    = not useVolFilter or (volume > avgVol)
+ema      = ta.ema(close, emaLen)
+trendLongLocal  = not useTrendFilter or (close > ema)
+trendShortLocal = not useTrendFilter or (close < ema)
+
+// ORB Size filter (percentage)
+orbRangePts = (orbSet ? (currHigh - currLow) : na)
+orbRangePct = (orbSet and currLow != 0) ? (orbRangePts / currLow * 100.0) : na
+rangeOK     = not na(orbRangePct) and (orbRangePct >= minRange and orbRangePct <= maxRange)
+
+// Breakout timing filter
+barsAllowed = int(math.round(maxDelayMins * 60.0 / math.max(timeframe.in_seconds(timeframe.period), 1)))
+timeOK      = not na(orbEndBar) and (bar_index - orbEndBar <= barsAllowed)
+
+// Session cutoff
+sessionOK = not useSessionFilter or (nyHour < sessionEndHour)
+
+// ================== Higher-Timeframe Trend ==================
+// Bring HTF EMA down to current chart. Use lookahead_off to avoid repaint against the closed HTF bar.
+htfEMA = request.security(syminfo.tickerid, htfTf, ta.ema(close, htfEmaLen), lookahead=barmerge.lookahead_off)
+// Optional: require EMA slope direction
+htfSlopeUp   = not requireHtfSlope or ta.rising(htfEMA, htfSlopeLookback)
+htfSlopeDown = not requireHtfSlope or ta.falling(htfEMA, htfSlopeLookback)
+// Final HTF conditions
+trendLongHTF  = not useHTFTrend or (close > htfEMA and htfSlopeUp)
+trendShortHTF = not useHTFTrend or (close < htfEMA and htfSlopeDown)
+
+// ================== FIBS (calc only) ==================
+rng         = orbSet ? (currHigh - currLow) : na
+fib0236     = orbSet ? (currLow + rng * 0.236) : na
+fib0382     = orbSet ? (currLow + rng * 0.382) : na
+fib0500     = orbSet ? (currLow + rng * 0.500) : na
+fib0618     = orbSet ? (currLow + rng * 0.618) : na
+fib0786     = orbSet ? (currLow + rng * 0.786) : na
+fib1000     = orbSet ? currHigh : na
+fib1272_up  = orbSet ? (currLow + rng * 1.272) : na
+fib1618_up  = orbSet ? (currLow + rng * 1.618) : na
+fib1272_dn  = orbSet ? (currHigh - rng * 1.272) : na
+fib1618_dn  = orbSet ? (currHigh - rng * 1.618) : na
+
+// Golden Pocket zones (0.5–0.618) & tolerance
+gpLongLow   = orbSet ? fib0500 : na
+gpLongHigh  = orbSet ? fib0618 : na
+gpShortLow  = orbSet ? (currHigh - rng * 0.618) : na
+gpShortHigh = orbSet ? (currHigh - rng * 0.500) : na
+gpTolAbs    = orbSet ? (rng * gpTolPct * 0.01) : na
+
+// ================== Breakout / Retest detection ==================
+canLong  = orbSet
+canShort = orbSet
+
+longBreakClose  = canLong and ta.crossover(close, currHigh)
+shortBreakClose = canShort and ta.crossunder(close, currLow)
+
+longBreakImmediate  = canLong and (close > currHigh) and (close[1] <= currHigh)
+shortBreakImmediate = canShort and (close < currLow)  and (close[1] >= currLow)
+
+longBreakRaw  = useCloseConfirm ? longBreakClose  : longBreakImmediate
+shortBreakRaw = useCloseConfirm ? shortBreakClose : shortBreakImmediate
+
+if orbSet
+    if longBreakClose
+        longBroke := true
+    if shortBreakClose
+        shortBroke := true
+
+// Baseline retest to edge
+retestTolLong  = canLong  ? currHigh * (retestPct/100.0) : 0.0
+retestTolShort = canShort ? currLow  * (retestPct/100.0) : 0.0
+
+// Require Golden Pocket touch if enabled
+longGPOk  = not useGoldenPocketRetest or (not na(gpLongLow)  and low  <= gpLongHigh + gpTolAbs and low  >= gpLongLow  - gpTolAbs)
+shortGPOk = not useGoldenPocketRetest or (not na(gpShortLow) and high >= gpShortLow - gpTolAbs and high <= gpShortHigh + gpTolAbs)
+
+// Retest candidates
+longRetestCandidate  = longBroke  and (low  <= currHigh + retestTolLong)  and close > open and longGPOk
+shortRetestCandidate = shortBroke and (high >= currLow  - retestTolShort) and close < open and shortGPOk
+
+// Assemble pre-entry logic
+longPre  = (useRetest ? longRetestCandidate  : longBreakRaw)
+shortPre = (useRetest ? shortRetestCandidate : shortBreakRaw)
+
+// Apply filters
+longPre  := longPre  and rangeOK and timeOK and sessionOK and volOK and trendLongLocal  and trendLongHTF
+shortPre := shortPre and rangeOK and timeOK and sessionOK and volOK and trendShortLocal and trendShortHTF
+
+// Cooldown
+cooldownOK = not useCooldown or na(lastSignalBar) or (bar_index - lastSignalBar > cooldownBars)
+longEntry  = longPre  and cooldownOK and canLong
+shortEntry = shortPre and cooldownOK and canShort
+
+if longEntry or shortEntry
+    lastSignalBar := bar_index
+
+// ================== Stops / Targets (visual only) ==================
+var float lastLongStop  = na
+var float lastLongTP    = na
+var float lastShortStop = na
+var float lastShortTP   = na
+
+if longEntry
+    stopLevel  = useRR ? currLow : close * (1 - slPercent/100.0)
+    takeLevel  = useRR ? close + (close - stopLevel) * rr : close * (1 + tpPercent/100.0)
+    lastLongStop := stopLevel
+    lastLongTP   := takeLevel
+
+if shortEntry
+    stopLevel  = useRR ? currHigh : close * (1 + slPercent/100.0)
+    takeLevel  = useRR ? close - (stopLevel - close) * rr : close * (1 - tpPercent/100.0)
+    lastShortStop := stopLevel
+    lastShortTP   := takeLevel
+
+// ================== GLOBAL PLOTS ==================
+// ORB lines
+plot(orbSet ? currHigh : na, title="ORB High", color=color.green, style=plot.style_linebr)
+plot(orbSet ? currLow  : na, title="ORB Low",  color=color.red,   style=plot.style_linebr)
+
+// Fibs
+drawRetrace = useFib and orbSet and showRetrace
+drawExt     = useFib and orbSet and showExt
+
+plot(drawRetrace ? fib0236 : na,   title="Fib 0.236", color=fibColor, linewidth=1, style=plot.style_linebr)
+plot(drawRetrace ? fib0382 : na,   title="Fib 0.382", color=fibColor, linewidth=1, style=plot.style_linebr)
+plot(drawRetrace ? fib0500 : na,   title="Fib 0.500", color=fibColor, linewidth=1, style=plot.style_linebr)
+plot(drawRetrace ? fib0618 : na,   title="Fib 0.618", color=fibColor, linewidth=1, style=plot.style_linebr)
+plot(drawRetrace ? fib0786 : na,   title="Fib 0.786", color=fibColor, linewidth=1, style=plot.style_linebr)
+plot(drawRetrace ? fib1000 : na,   title="Fib 1.000 (ORB High)", color=fibColor, linewidth=2, style=plot.style_linebr)
+
+plot(drawExt ? fib1272_up : na,    title="Fib 1.272 (Up)",   color=fibColor, linewidth=1, style=plot.style_linebr)
+plot(drawExt ? fib1618_up : na,    title="Fib 1.618 (Up)",   color=fibColor, linewidth=1, style=plot.style_linebr)
+plot(drawExt ? fib1272_dn : na,    title="Fib 1.272 (Down)", color=fibColor, linewidth=1, style=plot.style_linebr)
+plot(drawExt ? fib1618_dn : na,    title="Fib 1.618 (Down)", color=fibColor, linewidth=1, style=plot.style_linebr)
+
+// Entry markers
+plotshape(longEntry,  title="Long Entry",  text="LONG",  style=shape.labelup,   location=location.belowbar, color=color.green, textcolor=color.white, size=size.small)
+plotshape(shortEntry, title="Short Entry", text="SHORT", style=shape.labeldown, location=location.abovebar, color=color.red,   textcolor=color.white, size=size.small)
+
+// Targets & Stops
+plot(not na(lastLongStop)  ? lastLongStop  : na, title="Long Stop",  color=color.red,  style=plot.style_linebr, linewidth=2)
+plot(not na(lastLongTP)    ? lastLongTP    : na, title="Long TP",    color=color.blue, style=plot.style_linebr, linewidth=2)
+plot(not na(lastShortStop) ? lastShortStop : na, title="Short Stop", color=color.red,  style=plot.style_linebr, linewidth=2)
+plot(not na(lastShortTP)   ? lastShortTP   : na, title="Short TP",   color=color.blue, style=plot.style_linebr, linewidth=2)
+
+// ORB Box shading
+if showBox and orbSet
+    if na(orbBox)
+        orbBox := box.new(orbEndBar, currHigh, bar_index, currLow, xloc=xloc.bar_index, border_width=1, bgcolor=boxColor)
+    else
+        box.set_top(orbBox, currHigh)
+        box.set_bottom(orbBox, currLow)
+        box.set_left(orbBox, orbEndBar)
+        box.set_right(orbBox, bar_index)
+
+// ================== Debug overlay ==================
+if showDebug and orbSet
+    breakoutCloseExists = (close > currHigh) or (close < currLow)
+    showReason = false
+    reasonText = ""
+    if breakoutCloseExists and not (longEntry or shortEntry)
+        showReason := true
+        if not rangeOK
+            reasonText := "Blocked: ORB size"
+        else if not timeOK
+            reasonText := "Blocked: Too late"
+        else if not sessionOK
+            reasonText := "Blocked: Session cutoff"
+        else if not volOK
+            reasonText := "Blocked: Low volume"
+        else if not trendLongLocal and close > currHigh or not trendShortLocal and close < currLow
+            reasonText := "Blocked: Local trend mismatch"
+        else if useHTFTrend and (((close > currHigh) and not trendLongHTF) or ((close < currLow) and not trendShortHTF))
+            reasonText := "Blocked: HTF trend mismatch"
+        else if useRetest and not (longRetestCandidate or shortRetestCandidate)
+            reasonText := "Blocked: Waiting for retest"
+        else if useGoldenPocketRetest and not (longGPOk or shortGPOk)
+            reasonText := "Blocked: Golden Pocket"
+        else if not cooldownOK
+            reasonText := "Blocked: Cooldown"
+        else
+            reasonText := "Blocked: Other filter"
+    if showReason
+        if not na(dbg)
+            label.delete(dbg)
+        yPos = close
+        styleLbl = close > currHigh ? label.style_label_down : label.style_label_up
+        dbg := label.new(bar_index, yPos, reasonText, style=styleLbl, color=color.new(#ff5252, 76), textcolor=color.white, size=size.tiny)
+
+// ================== Alerts ==================
+alertcondition(longEntry,  title="ORB Long Entry",  message="ORB Long Entry")
+alertcondition(shortEntry, title="ORB Short Entry", message="ORB Short Entry")

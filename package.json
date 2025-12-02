@@ -1,0 +1,31 @@
+{
+  "name": "excel2word",
+  "version": "1.0.0",
+  "description": "将Excel数据填充到Word模板并生成新文件（支持Word和PDF输出）",
+  "main": "document-processor/index.js",
+  "scripts": {
+    "start": "node document-processor/index.js",
+    "start:pdf": "node document-processor/index.js",
+    "start:new": "node document-processor/index_new.js",
+    "download:youtube": "node youtube-downloader/download_youtube.js"
+  },
+  "keywords": [
+    "excel",
+    "word",
+    "pdf",
+    "automation"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "archiver": "^5.3.1",
+    "docxtemplater": "^3.42.3",
+    "https-proxy-agent": "^7.0.6",
+    "mammoth": "^1.6.0",
+    "officegen": "^0.6.5",
+    "pizzip": "^3.1.6",
+    "puppeteer": "^21.0.0",
+    "xlsx": "^0.18.5",
+    "ytdl-core": "^4.11.5"
+  }
+}

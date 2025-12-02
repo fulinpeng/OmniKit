@@ -1,0 +1,513 @@
+//@version=5
+indicator("Mult WaveTrend Trading Signals", overlay=true)
+
+// === 参数 ===
+n1 = input.int(10, "WT Channel Length")
+n2 = input.int(21, "WT Average Length")
+
+// === EMA 参数 ===
+ema20 = ta.ema(close, 20)
+ema50 = ta.ema(close, 50)
+ema100 = ta.ema(close, 100)
+
+// === ATR 参数 ===
+atrLength = input.int(9, "ATR Length")
+atrMultiplier = input.float(1.0, "ATR 倍数", minval=0.1, step=0.1)
+atr = ta.atr(atrLength)
+atrVal = atr * atrMultiplier
+
+// === 盈亏比参数 ===
+riskRewardRatio = input.float(2.5, "盈亏比", minval=0.1, step=0.1, tooltip="盈亏比，默认为2.5")
+
+// === 阈值参数 ===
+p5UpperLimit = input.int(50, "开仓p5上限", minval=-100, maxval=100, tooltip="用于条件1的上限判断")
+p15LowerLimit = input.int(0, "开仓p15下限", minval=-100, maxval=100, tooltip="对应条件2的下限，可根据需要调整（默认0）")
+p1h1UpperLimit = input.int(25, "readyBuy的p1h1上限", minval=-100, maxval=100, tooltip="readyBuy条件中p1h1的上限（默认25）")
+thresholdLevel = input.int(50, "阈值水平", minval=0)
+fvgWaitBars = input.int(0, "FVG等待K线数量", minval=0, maxval=15, tooltip="条件1+2+3满足后，允许等待多头FVG的K线数量（默认0，最大15）")
+partialCloseLevel = input.int(55, "移动止损触发p5阈值", minval=0, tooltip="当p5m1达到该值时触发移动止损（默认55）")
+breakevenFactor = input.float(1.001, "保本止损系数", minval=1.0, step=0.0005, tooltip="移动止损到保本时使用：开仓价 * 系数（默认1.001）")
+
+// === 止盈参数 ===
+enableProfitTarget2 = input.bool(true, "启用止盈条件2", tooltip="当p5m1和p15m1都大于阈值时立即平仓（默认开启）")
+
+// === 止损参数 ===
+pivotLength = input.int(7, "摆动低点周期", minval=1, tooltip="用于计算摆动低点的周期长度")
+avgHeightLength = input.int(21, "K线平均高度周期", minval=1, tooltip="用于计算K线平均高度的周期长度")
+
+// === 显示选项 ===
+showReadyBuy = input.bool(true, "显示 Ready Buy 信号")
+showLongEntry = input.bool(true, "显示开仓信号")
+showStopLoss = input.bool(true, "显示止损线")
+showTakeProfit = input.bool(true, "显示止盈线")
+maxBoxes = input.int(100, "最大显示矩形数量", minval=1, maxval=500, tooltip="由于TradingView限制，建议不超过50个")
+
+// === 摆动高低点显示选项 ===
+showSwingPoints = input.bool(true, "显示摆动高低点", group="摆动高低点")
+swingHighColor = input.color(color.red, "摆动高点颜色", group="摆动高低点")
+swingLowColor = input.color(color.teal, "摆动低点颜色", group="摆动高低点")
+showCandlePatterns = input.bool(true, "显示蜡烛图形态", group="摆动高低点")
+
+// === WaveTrend 指标计算 ===
+ap = hlc3 
+esa = ta.ema(ap, n1)
+d = ta.ema(math.abs(ap - esa), n1)
+ci = (ap - esa) / (0.015 * d)
+tci = ta.ema(ci, n2)
+
+wt1 = tci
+wt2 = ta.sma(wt1, 4)
+
+// === 多时间框架 WaveTrend 计算函数 ===
+wt_calc() =>
+    _ap = hlc3
+    _esa = ta.ema(_ap, n1)
+    _d = ta.ema(math.abs(_ap - _esa), n1)
+    _ci = (_ap - _esa) / (0.015 * _d)
+    _tci = ta.ema(_ci, n2)
+    _wt1 = _tci
+    _wt2 = ta.sma(_wt1, 4)
+    [_wt1, _wt2]
+
+[wt1_4h, wt2_4h] = request.security(syminfo.tickerid, "240", wt_calc(), lookahead=barmerge.lookahead_off)
+[wt1_1h, wt2_1h] = request.security(syminfo.tickerid, "60",  wt_calc(), lookahead=barmerge.lookahead_off)
+[wt1_15, wt2_15] = request.security(syminfo.tickerid, "15",  wt_calc(), lookahead=barmerge.lookahead_off)
+
+// === 变量定义（用于策略逻辑） ===
+p5m1 = wt1
+p15m1 = wt1_15
+p1h1 = wt1_1h
+
+// === 止损和止盈计算（用于显示） ===
+var float entryPrice = na
+var float currentStopLoss = na
+var float initialTakeProfit = na
+var float entryBarLow = na
+var bool movedToBreakeven = false
+var int entryBarIndex = na
+
+// 使用数组存储历史仓位信息（开仓bar索引、开仓时间、止损价格、止盈价格、平仓bar索引、平仓时间）
+var array<int> entryBars = array.new<int>()
+var array<int> entryTimes = array.new<int>()  // 开仓时间戳
+var array<float> stopLossPrices = array.new<float>()
+var array<float> takeProfitPrices = array.new<float>()
+var array<int> exitBars = array.new<int>()
+var array<int> exitTimes = array.new<int>()  // 平仓时间戳（未平仓为na）
+
+// 使用数组存储box对象（用于绘制止盈止损矩形）
+var array<box> tradeBoxes = array.new<box>()
+
+// 使用数组存储line对象（用于绘制止盈止损边框：上下边框显示，左右边框透明）
+var array<line> stopLossLines = array.new<line>()  // 下边框（止损线，红色）
+var array<line> takeProfitLines = array.new<line>()  // 上边框（止盈线，绿色）
+
+// === 摆动低点计算（用于检测HL和readyBuy条件） ===
+// 计算摆动低点
+pl = ta.pivotlow(pivotLength, pivotLength)
+
+// 存储之前的摆动低点（用于判断HL/LL，参考LuxAlgo代码使用ply）
+var float prevSwingLow = na
+// 存储最近的摆动低点（用于止损）
+var float lastSwingLow = na
+// 存储最近摆动低点所在的bar_index（用于FVG检测）
+var int lastSwingLowBarIndex = na
+// 存储当前是否为HL
+var bool isHL = false
+
+// 当检测到新的摆动低点时，判断是否为HL并更新最近的摆动低点
+// 注意：判断逻辑与参考代码一致：pl < prevSwingLow 为 LL，pl >= prevSwingLow 为 HL
+if not na(pl)
+    // 如果之前的摆动低点存在，且当前摆动低点 >= 之前的摆动低点，则为HL
+    // 如果当前摆动低点 < 之前的摆动低点，则为LL（isHL = false）
+    isHL := na(prevSwingLow) ? false : pl >= prevSwingLow
+    // 更新最近的摆动低点（用于止损）
+    lastSwingLow := pl
+    // 更新最近摆动低点所在的bar_index（pivotlow返回的是pivotLength根K线前的bar_index）
+    lastSwingLowBarIndex := bar_index - pivotLength
+    // 注意：prevSwingLow 的更新应该在标注部分进行，以保持与参考代码一致
+else
+    // 如果没有检测到新的摆动低点，isHL保持为false
+    isHL := false
+
+// === 准备做多条件 (readyBuy) ===
+var bool readyBuy = false
+
+// 条件2: p5m1, p15m1 都小于等于-50
+// 条件3: p1h1小于25（25可配置）
+readyBuyCondition = p5m1 <= -50 and p15m1 <= -50 and p1h1 < p1h1UpperLimit
+
+// 设置 readyBuy = true
+if not readyBuy and readyBuyCondition
+    readyBuy := true
+
+// readyBuy 失效条件：如果 readyBuy == true，并且当前没有多单仓位，并且满足以下条件，readyBuy 就为 false
+// 1. p1h1 大于50
+if readyBuy and na(entryPrice) and p1h1 > thresholdLevel
+    readyBuy := false
+
+// === 开仓条件检查 ===
+// 声明 condition3 变量用于开仓条件
+var bool condition3 = false
+
+// 条件1: 检查 50 >= p5m1 > p15m1 > p1h1
+checkFullCondition(offset) =>
+    p5m1_val = p5m1[offset]
+    p15m1_val = p15m1[offset]
+    p1h1_val = p1h1[offset]
+    p5UpperLimit >= p5m1_val and p5m1_val > p15m1_val and p15m1_val > p1h1_val
+
+// 条件2: 检查 0 > p15m1 > p1h1
+checkCondition2(offset) =>
+    p15m1_val = p15m1[offset]
+    p1h1_val = p1h1[offset]
+    p15LowerLimit > p15m1_val and p15m1_val > p1h1_val
+
+// 条件3A: 检查 p5m1 > p15m1
+checkSimpleCondition(offset) =>
+    p5m1_val = p5m1[offset]
+    p15m1_val = p15m1[offset]
+    p5m1_val > p15m1_val
+
+// 条件3B: 检查 p15m1 > p1h1
+checkCrossCondition(offset) =>
+    p15m1_val = p15m1[offset]
+    p1h1_val = p1h1[offset]
+    p15m1_val > p1h1_val
+
+// 1. 当前k线满足50 > p5m1 > p15m1 > p1h1
+currentFullSatisfy = checkFullCondition(0)
+
+// 2. 当前k线满足 0 > p15m1 > p1h1
+currentCondition2Satisfy = checkCondition2(0)
+
+// 3. （当前k线满足 p5m1 > p15m1 并且 前1根k线不满足 p5m1 > p15m1） 或 (当前k线满足 p15m1 > p1h1 并且 前1根k线不满足 p15m1 > p1h1)
+// 情况A：当前k线满足 p5m1 > p15m1 并且 前1根k线不满足 p5m1 > p15m1
+currentSimpleSatisfy = checkSimpleCondition(0)
+prev1NotSimpleSatisfy = not checkSimpleCondition(1)
+condition3A = currentSimpleSatisfy and prev1NotSimpleSatisfy
+
+// 情况B：当前k线满足 p15m1 > p1h1 并且 前1根k线不满足 p15m1 > p1h1
+currentCrossSatisfy = checkCrossCondition(0)
+prev1NotCrossSatisfy = not checkCrossCondition(1)
+condition3B = currentCrossSatisfy and prev1NotCrossSatisfy
+
+// 条件3：情况A 或 情况B
+condition3 := condition3A or condition3B
+
+// === FVG检测（Fair Value Gap） ===
+// 检测5分钟级别的多头FVG（当前图表是5分钟，直接使用当前图表数据）
+// 多头FVG：第3根K线的最高价 < 第1根K线的最低价
+// 直接使用当前图表数据，因为策略只在5分钟级别使用
+htf_high1_5m = high[1]
+htf_low1_5m = low[1]
+htf_high3_5m = high[3]
+htf_low3_5m = low[3]
+isBullishFVG_5m = htf_high3_5m < htf_low1_5m
+
+// 检测15分钟级别的多头FVG（需要使用request.security获取15分钟数据）
+[htf_high1_15m, htf_low1_15m, htf_high3_15m, htf_low3_15m] = request.security(syminfo.tickerid, "15", [high[1], low[1], high[3], low[3]], lookahead=barmerge.lookahead_off)
+isBullishFVG_15m = htf_high3_15m < htf_low1_15m
+
+// === 摆动高点计算（用于标注） ===
+// 计算摆动高点
+ph = ta.pivothigh(pivotLength, pivotLength)
+
+// 存储之前的摆动高点（用于判断HH/LH）
+var float prevSwingHigh = na
+
+// 当前K线是否检测到多头FVG（5分钟或15分钟级别）
+bullishFVGDetected = isBullishFVG_5m or isBullishFVG_15m
+
+// === FVG等待逻辑 ===
+// 根据策略描述：条件1和2都满足的情况下，当前k线包括后续10根k线中任何一根k线出现5分钟级别或者15分钟级fvg
+// 指标形成金叉的那根k线作为当前k线，查看当前k线是否形成fvg，没有fvg的话继续等待下一根k线，查看后续1根k线是否形成fvg
+var bool fvgWindowActive = false
+var int fvgWindowStart = na
+
+// 条件1、2、3都满足时，开启FVG等待窗口
+condition123Met = readyBuy and na(entryPrice) and currentFullSatisfy and currentCondition2Satisfy and condition3
+
+if condition123Met
+    fvgWindowActive := true
+    fvgWindowStart := bar_index
+else if fvgWindowActive
+    // 如果超过等待窗口或readyBuy失效，则关闭窗口
+    if bar_index - fvgWindowStart > fvgWaitBars or not readyBuy
+        fvgWindowActive := false
+        fvgWindowStart := na
+
+// 在等待窗口内，检查当前K线是否形成FVG（5分钟或15分钟级别）
+// 每根K线都检查当前K线是否形成FVG，如果没有，等待下一根K线继续检查
+fvgConfirmed = fvgWindowActive and bullishFVGDetected
+
+// 开仓条件：readyBuy == true，当前没有多单仓位，且在等待窗口内出现多头FVG
+longCondition = readyBuy and na(entryPrice) and fvgConfirmed
+
+// === 计算最近N根K线的平均高度（方案3：手动计算） ===
+var float avgCandleHeight = na
+
+// 手动计算最近avgHeightLength根K线的平均高度
+if bar_index >= avgHeightLength - 1
+    sumHeight = 0.0
+    for i = 0 to avgHeightLength - 1
+        sumHeight += high[i] - low[i]
+    avgCandleHeight := sumHeight / avgHeightLength
+else
+    // 如果K线数量不足，使用当前已有的K线计算平均值
+    if bar_index >= 0
+        sumHeight = 0.0
+        for i = 0 to bar_index
+            sumHeight += high[i] - low[i]
+        avgCandleHeight := sumHeight / (bar_index + 1)
+    else
+        avgCandleHeight := na
+
+// 开仓时记录信息
+if longCondition
+    entryPrice := close
+    // 使用最近的低于当前k线价格的摆动低点 - 最近N根k线的平均高度作为止损价（HL/LL都可以）
+    // 如果最近的摆动低点存在且低于当前价格，使用它减去平均高度；否则使用最近3根k线的最低价作为后备
+    lowest3Bars = ta.lowest(low, 3)  // 最近3根K线的最低价
+    baseStopLoss = not na(lastSwingLow) and lastSwingLow < close ? lastSwingLow : lowest3Bars
+    // 减去平均高度
+    calculatedStopLoss = not na(avgCandleHeight) ? baseStopLoss - avgCandleHeight : baseStopLoss
+    // 验证止损价是否有效，如果为na或<=0，使用最近3根k线的最低价
+    // 只检查基本有效性，不检查是否大于开仓价（因为可能数据异常）
+    currentStopLoss := na(calculatedStopLoss) or calculatedStopLoss <= 0 ? lowest3Bars : calculatedStopLoss
+    
+    initialTakeProfit := entryPrice + (entryPrice - currentStopLoss) * riskRewardRatio
+    entryBarLow := low
+    movedToBreakeven := false
+    entryBarIndex := bar_index
+    fvgWindowActive := false
+    fvgWindowStart := na
+    
+    // 使用验证后的止损价（已经验证过有效性）
+    validStopLoss = currentStopLoss
+    validTakeProfit = initialTakeProfit
+    
+    // 记录到数组（使用验证后的值）
+    array.push(entryBars, bar_index)
+    array.push(entryTimes, time)  // 存储开仓时间戳
+    array.push(stopLossPrices, validStopLoss)
+    array.push(takeProfitPrices, validTakeProfit)
+    array.push(exitBars, na)  // 平仓时再更新
+    array.push(exitTimes, na)  // 平仓时间戳，平仓时再更新
+    
+    // 创建止盈止损矩形box和边框线
+    if showStopLoss or showTakeProfit
+        // 如果超过最大显示数量，删除最旧的box和line对象（保持数组同步）
+        tradeCount = array.size(entryBars)
+        if tradeCount > maxBoxes
+            // 计算需要删除的数量
+            deleteCount = tradeCount - maxBoxes
+            // 删除最旧的box和line对象
+            for j = 0 to deleteCount - 1
+                if array.size(tradeBoxes) > 0
+                    oldBox = array.shift(tradeBoxes)
+                    if not na(oldBox)
+                        box.delete(oldBox)
+                if array.size(stopLossLines) > 0
+                    oldStopLossLine = array.shift(stopLossLines)
+                    if not na(oldStopLossLine)
+                        line.delete(oldStopLossLine)
+                if array.size(takeProfitLines) > 0
+                    oldTakeProfitLine = array.shift(takeProfitLines)
+                    if not na(oldTakeProfitLine)
+                        line.delete(oldTakeProfitLine)
+        
+        // 创建box（使用time而不是bar_index，避免距离过远的问题）
+        newBox = box.new(left=time, top=validTakeProfit, right=time, bottom=validStopLoss, xloc=xloc.bar_time, bgcolor=color.new(color.gray, 85), border_color=color.new(color.gray, 100))
+        array.push(tradeBoxes, newBox)
+        
+        // 创建止损线（下边框，红色）
+        if showStopLoss
+            stopLossLine = line.new(x1=time, y1=validStopLoss, x2=time, y2=validStopLoss, color=color.red, width=2, style=line.style_solid, extend=extend.none, xloc=xloc.bar_time)
+            array.push(stopLossLines, stopLossLine)
+        
+        // 创建止盈线（上边框，绿色）
+        if showTakeProfit
+            takeProfitLine = line.new(x1=time, y1=validTakeProfit, x2=time, y2=validTakeProfit, color=color.green, width=2, style=line.style_solid, extend=extend.none, xloc=xloc.bar_time)
+            array.push(takeProfitLines, takeProfitLine)
+
+// === 移动止盈/止损逻辑 ===
+if not na(entryPrice)
+    // 当p5m1大于等于设定阈值，并且 close > 开仓价格*1.001 时，把止损移动到保本位置（开仓价 * 系数）
+    if not movedToBreakeven and p5m1 >= partialCloseLevel and close > entryPrice * breakevenFactor
+        currentStopLoss := entryPrice * breakevenFactor
+        movedToBreakeven := true
+
+// === 止损/止盈条件检查 ===
+lastFixedTakeProfit = array.size(takeProfitPrices) > 0 ? array.get(takeProfitPrices, array.size(takeProfitPrices) - 1) : na
+
+// 止损：使用当前动态止损价（考虑移动止损），与策略保持一致（使用收盘价判断）
+stopLossHit = not na(entryPrice) and not na(currentStopLoss) and close <= currentStopLoss
+
+// === 止盈条件检查（使用数组中存储的固定止盈价，独立于策略文件逻辑） ===
+// 条件1: 盈亏比满足1:3（使用数组中的固定止盈价）
+profitTarget1 = not na(entryPrice) and not na(lastFixedTakeProfit) and close >= lastFixedTakeProfit
+
+// 条件2: 当 p5m1 和 p15m1 都大于阈值立即平仓（阈值可配置，可通过开关控制）
+profitTarget2 = enableProfitTarget2 and not na(entryPrice) and p5m1 > thresholdLevel and p15m1 > thresholdLevel
+
+// 如果满足任何平仓条件（止损或止盈），清除持仓信息并记录平仓bar
+exitCondition = stopLossHit or profitTarget1 or profitTarget2
+
+if exitCondition
+    // 更新最后一个仓位的平仓bar索引和时间戳
+    if array.size(exitBars) > 0
+        array.set(exitBars, array.size(exitBars) - 1, bar_index)
+        array.set(exitTimes, array.size(exitTimes) - 1, time)
+    
+    // 平仓时，box的右边界会在下面的循环中更新
+    
+    entryPrice := na
+    currentStopLoss := na
+    initialTakeProfit := na
+    entryBarLow := na
+    movedToBreakeven := false
+    entryBarIndex := na
+
+// === 持仓状态判断 ===
+hasPosition = not na(entryPrice)
+
+// === 检查当前K线是否有仓位（根据历史仓位记录） ===
+var bool currentBarHasPosition = false
+
+// 首先检查是否有当前仓位
+currentBarHasPosition := not na(entryPrice)
+
+// 如果没有当前仓位，检查历史仓位记录
+if not currentBarHasPosition and array.size(entryBars) > 0
+    for i = array.size(entryBars) - 1 to 0
+        entryBar = array.get(entryBars, i)
+        exitBar = array.get(exitBars, i)
+        // 如果当前bar在持仓期间（包括开仓bar和平仓bar，但不包括平仓bar之后）
+        if bar_index >= entryBar and (na(exitBar) or bar_index <= exitBar)
+            currentBarHasPosition := true
+            break
+
+// === 每根K线：根据记录刷新所有矩形和边框线 ===
+if showStopLoss or showTakeProfit
+    tradeCount = array.size(entryBars)
+    boxCount = array.size(tradeBoxes)
+    if tradeCount > 0 and boxCount > 0
+        // 只显示最近的maxBoxes个交易（从最新的开始）
+        // 由于我们删除了最旧的box，所以box数组和交易数据数组的索引需要对齐
+        startIndex = math.max(0, tradeCount - boxCount)
+        for i = startIndex to tradeCount - 1
+            eBar = array.get(entryBars, i)
+            eTime = array.get(entryTimes, i)
+            xBar = array.get(exitBars, i)
+            xTime = array.get(exitTimes, i)
+            sl = array.get(stopLossPrices, i)
+            tp = array.get(takeProfitPrices, i)
+            
+            // 计算box数组中的索引（box数组只包含最近的maxBoxes个）
+            boxIndex = i - startIndex
+            
+            // 检查box对象是否存在且有效
+            if boxIndex < boxCount
+                b = array.get(tradeBoxes, boxIndex)
+                // 只在当前K线已经走到开仓之后时显示，且box对象有效
+                if bar_index >= eBar and not na(b)
+                    // 未平仓则右边用当前time，平仓后锁定在exitTime
+                    rightTime = na(xTime) ? time : xTime
+                    
+                    // 更新box（使用time而不是bar_index）
+                    box.set_left(b, eTime)
+                    box.set_right(b, rightTime)
+                    box.set_bottom(b, sl)
+                    box.set_top(b, tp)
+            
+            // 更新止损线（下边框，红色）
+            if showStopLoss and boxIndex < array.size(stopLossLines) and bar_index >= eBar
+                slLine = array.get(stopLossLines, boxIndex)
+                if not na(slLine)
+                    rightTime = na(xTime) ? time : xTime
+                    line.set_xy1(slLine, eTime, sl)
+                    line.set_xy2(slLine, rightTime, sl)
+            
+            // 更新止盈线（上边框，绿色）
+            if showTakeProfit and boxIndex < array.size(takeProfitLines) and bar_index >= eBar
+                tpLine = array.get(takeProfitLines, boxIndex)
+                if not na(tpLine)
+                    rightTime = na(xTime) ? time : xTime
+                    line.set_xy1(tpLine, eTime, tp)
+                    line.set_xy2(tpLine, rightTime, tp)
+
+// === 蜡烛图形态识别（用于标注） ===
+// 获取pivotLength根K线之前的数据
+o = open[pivotLength]
+h = high[pivotLength]
+l = low[pivotLength]
+c = close[pivotLength]
+bodySize = math.abs(c - o)  // 蜡烛图实体大小
+
+// 获取前一根K线的数据
+o1 = open[pivotLength + 1]
+c1 = close[pivotLength + 1]
+
+// 蜡烛图形态判断
+hammer = pl and math.min(o, c) - l > bodySize and h - math.max(c, o) < bodySize
+ihammer = pl and h - math.max(c, o) > bodySize and math.min(c, o) - l < bodySize
+bulleng = c > o and c1 < o1 and c > o1 and o < c1
+hanging = ph and math.min(c, o) - l > bodySize and h - math.max(o, c) < bodySize
+shooting = ph and h - math.max(o, c) > bodySize and math.min(c, o) - l < bodySize
+beareng = c < o and c1 > o1 and c < o1 and o > c1
+
+// 确定当前形态
+patternTitle = hammer ? "Hammer" 
+     : ihammer ? "Inverted Hammer" 
+     : bulleng ? "Bullish Engulfing" 
+     : hanging ? "Hanging Man" 
+     : shooting ? "Shooting Star" 
+     : beareng ? "Bearish Engulfing" 
+     : "None"
+
+// === 摆动高低点标注 ===
+if showSwingPoints
+    // 摆动高点标注
+    if not na(ph)
+        H = na(prevSwingHigh) ? "H" : (ph > prevSwingHigh ? "HH" : "LH")
+        labelText = H
+        if showCandlePatterns and patternTitle != "None"
+            labelText += "\n" + patternTitle
+        
+        label.new(bar_index[pivotLength], ph, labelText, 
+                  color=color(na), 
+                  style=label.style_label_down, 
+                  textcolor=swingHighColor, 
+                  size=size.small)
+        prevSwingHigh := ph
+    
+    // 摆动低点标注
+    // 参考LuxAlgo代码：L = pl < ply ? 'LL' : 'HL'
+    if not na(pl)
+        // 使用更新前的prevSwingLow进行判断（与参考代码逻辑一致）
+        L = na(prevSwingLow) ? "L" : (pl < prevSwingLow ? "LL" : "HL")
+        labelText = L
+        if showCandlePatterns and patternTitle != "None"
+            labelText += "\n" + patternTitle
+        
+        label.new(bar_index[pivotLength], pl, labelText, 
+                  color=color(na), 
+                  style=label.style_label_up, 
+                  textcolor=swingLowColor, 
+                  size=size.small)
+        // 标注完成后更新prevSwingLow（与参考代码一致：ply := pl）
+        prevSwingLow := pl
+
+// === 可视化 ===
+
+// 开仓信号（蓝色标签）
+plotshape(showLongEntry and longCondition, style=shape.labelup,  location=location.belowbar, color=color.new(color.blue, 0), size=size.normal, title="Long Entry")
+
+// 止盈止损矩形和边框线已通过box和line对象绘制
+// box用于定义矩形区域（填充半透明，边框透明）
+// line用于绘制上下边框（上边框绿色止盈线，下边框红色止损线，左右边框通过box透明实现）
+
+// EMA 线（可选显示，用于参考）
+plot(ema20, color=color.new(color.blue, 50), linewidth=1, title="EMA 20")
+plot(ema50, color=color.new(color.orange, 50), linewidth=1, title="EMA 50")
+plot(ema100, color=color.new(color.red, 50), linewidth=1, title="EMA 100")

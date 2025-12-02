@@ -1,0 +1,78 @@
+//@version=5
+strategy("Mult WaveTrend Cross Strategy", overlay=false, default_qty_type=strategy.percent_of_equity, default_qty_value=100)
+
+// === 参数 ===
+n1 = input.int(10, "WT Channel Length")
+n2 = input.int(21, "WT Average Length")
+
+obLevel1 = input.int(60, "OverBought Level 1 (+60)")
+obLevel2 = input.int(53, "OverBought Level 2 (+53)")
+midLevelHigh = input.int(50, "看空阈值线 (+50)")
+midLevelLow = input.int(-50, "看多阈值线 (-50)")
+osLevel2 = input.int(-53, "OverSold Level 2 (-53)")
+osLevel1 = input.int(-60, "OverSold Level 1 (-60)")
+
+// === WaveTrend 指标计算 ===
+ap = hlc3 
+esa = ta.ema(ap, n1)
+d = ta.ema(math.abs(ap - esa), n1)
+ci = (ap - esa) / (0.015 * d)
+tci = ta.ema(ci, n2)
+
+wt1 = tci
+wt2 = ta.sma(wt1, 4)
+
+// === 多时间框架 WaveTrend (4H / 1H / 15m / 当前5m) ===
+showMTF = input.bool(true, "显示多时间框架WT", inline="mtf")
+show4H  = input.bool(true, "4H", inline="mtf")
+show1H  = input.bool(true, "1H", inline="mtf")
+show15  = input.bool(true, "15m", inline="mtf")
+
+wt_calc() =>
+    _ap = hlc3
+    _esa = ta.ema(_ap, n1)
+    _d = ta.ema(math.abs(_ap - _esa), n1)
+    _ci = (_ap - _esa) / (0.015 * _d)
+    _tci = ta.ema(_ci, n2)
+    _wt1 = _tci
+    _wt2 = ta.sma(_wt1, 4)
+    [_wt1, _wt2]
+
+[wt1_4h, wt2_4h] = request.security(syminfo.tickerid, "240", wt_calc(), lookahead=barmerge.lookahead_off)
+[wt1_1h, wt2_1h] = request.security(syminfo.tickerid, "60",  wt_calc(), lookahead=barmerge.lookahead_off)
+[wt1_15, wt2_15] = request.security(syminfo.tickerid, "15",  wt_calc(), lookahead=barmerge.lookahead_off)
+
+// 已移除多空信号与下单逻辑
+
+// === 波动指标图线（当前5m：淡青） ===
+p5m1 = plot(wt1, color=color.new(color.aqua, 0), title="WT1 (5m)", linewidth=2)
+p5m2 = plot(wt2, color=color.new(color.aqua, 60), title="WT2 (5m)", linewidth=1)
+fill(p5m1, p5m2, color=color.new(color.aqua, 88))
+
+// === MTF 叠加（同面板显示） ===
+// 4H：红
+p4h1 = plot(showMTF and show4H ? wt1_4h : na, color=color.new(color.red, 0),  title="WT1 (4H)", linewidth=2)
+p4h2 = plot(showMTF and show4H ? wt2_4h : na, color=color.new(color.red, 65), title="WT2 (4H)", linewidth=1)
+fill(p4h1, p4h2, color=color.new(color.red, 88))
+
+// 1H：橙
+p1h1 = plot(showMTF and show1H ? wt1_1h : na, color=color.new(color.orange, 0),  title="WT1 (1H)", linewidth=2)
+p1h2 = plot(showMTF and show1H ? wt2_1h : na, color=color.new(color.orange, 65), title="WT2 (1H)", linewidth=1)
+fill(p1h1, p1h2, color=color.new(color.orange, 88))
+
+// 15m：淡黄
+p15m1 = plot(showMTF and show15 ? wt1_15 : na, color=color.new(color.yellow, 0),  title="WT1 (15m)", linewidth=2)
+p15m2 = plot(showMTF and show15 ? wt2_15 : na, color=color.new(color.yellow, 65), title="WT2 (15m)", linewidth=1)
+fill(p15m1, p15m2, color=color.new(color.yellow, 88))
+
+// 已移除交叉圆点与多空三角可视化
+
+// === 参考线 ===
+plot(0, color=color.gray, title="Zero Line")
+plot(obLevel1, color=color.red, title="OB +60")
+// plot(obLevel2, color=color.red, title="OB +53")
+plot(midLevelHigh, color=color.red, title="看空阈值 +50")
+plot(midLevelLow, color=color.green, title="看多阈值 -50")
+// plot(osLevel2, color=color.green, title="OS -53")
+plot(osLevel1, color=color.green, title="OS -60")
+

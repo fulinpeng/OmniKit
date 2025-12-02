@@ -1,0 +1,305 @@
+//@version=5
+strategy("Multi-Timeframe FVG Strategy", overlay=true, max_boxes_count=160, max_lines_count=50, max_labels_count=80, max_bars_back=5000,
+     initial_capital=100000, default_qty_type=strategy.percent_of_equity, default_qty_value=10, calc_on_every_tick=true)
+
+// ============================================================================
+// 输入设置
+// ============================================================================
+string time_group = "时间框架"
+string vis_group = "FVG 可视化"
+string trade_group = "交易设置"
+
+string baseTf = timeframe.period
+string midTf = input.timeframe("15", "中级别 (默认15m)", group=time_group)
+string highTf = input.timeframe("240", "高级别 (默认4H)", group=time_group)
+string hourTf = input.timeframe("60", "确认级别 (默认1H)", group=time_group)
+int maxFvgPerTf = input.int(10, "每个级别保留的FVG数", minval=1, maxval=30, group=time_group)
+
+color bullColor = input.color(color.new(color.green, 60), "看涨FVG颜色", group=vis_group)
+color bearColor = input.color(color.new(color.red, 60), "看跌FVG颜色", group=vis_group)
+color mitigatedColor = input.color(color.new(color.gray, 70), "被回测FVG颜色", group=vis_group)
+bool showBaseTf = input.bool(true, "显示当前级别FVG", group=vis_group)
+bool showMidTf = input.bool(true, "显示中级别FVG", group=vis_group)
+bool showHighTf = input.bool(true, "显示高级别FVG", group=vis_group)
+int fvgDisplayBars = input.int(120, "FVG显示长度(柱)", minval=5, maxval=600, group=vis_group)
+
+bool enableStrategy = input.bool(true, "启用策略下单", group=trade_group)
+bool allowMultiplePerEnv = input.bool(false, "同一环境允许多次入场", group=trade_group)
+float maxRR = input.float(3.0, "最大目标盈亏比", minval=1.0, maxval=5.0, step=0.5, group=trade_group)
+
+// ============================================================================
+// 数据结构定义
+// ============================================================================
+
+type Mfvg
+    int tfIdx
+    string tf
+    bool bullish
+    float top
+    float bottom
+    float midLow
+    float midHigh
+    int left
+    bool mitigated
+    int createdIndex
+    int sourceTime
+
+// ============================================================================
+// 全局变量
+// ============================================================================
+
+var Mfvg[] baseFvgs = array.new<Mfvg>()
+var Mfvg[] midFvgs = array.new<Mfvg>()
+var Mfvg[] highFvgs = array.new<Mfvg>()
+var box[] baseFvgBoxes = array.new_box()
+var box[] midFvgBoxes = array.new_box()
+var box[] highFvgBoxes = array.new_box()
+var int currentEnvId = na
+var int envBreakIndex = na
+var float envBreakHigh = na
+var int lastEntryEnvId = na
+
+// ============================================================================
+// 工具函数
+// ============================================================================
+
+f_security(string tf, series float src) =>
+    tf == baseTf ? src : request.security(syminfo.tickerid, tf, src, lookahead=barmerge.lookahead_on)
+
+f_security_int(string tf, series int src) =>
+    tf == baseTf ? src : request.security(syminfo.tickerid, tf, src, lookahead=barmerge.lookahead_on)
+
+f_addFvg(int tfIdx, string tf, Mfvg[] storage, bool bullish, float top, float bottom, float midLow, float midHigh, int sourceTime) =>
+    int leftIndex = bar_index - 2
+    Mfvg fvg = Mfvg.new(tfIdx, tf, bullish, top, bottom, midLow, midHigh, leftIndex, false, bar_index, sourceTime)
+    array.push(storage, fvg)
+    if array.size(storage) > maxFvgPerTf
+        array.shift(storage)
+
+f_findLastIndex(Mfvg[] storage, bool bullish) =>
+    int result = na
+    int i = array.size(storage) - 1
+    while i >= 0
+        Mfvg candidate = array.get(storage, i)
+        if candidate.bullish == bullish
+            result := i
+            break
+        i -= 1
+    result
+
+f_detectFvgs(int tfIdx, string tf, Mfvg[] storage) =>
+    float h1 = f_security(tf, high[1])
+    float l1 = f_security(tf, low[1])
+    float h3 = f_security(tf, high[3])
+    float l3 = f_security(tf, low[3])
+    float midLow = f_security(tf, low[2])
+    float midHigh = f_security(tf, high[2])
+    int time2 = int(f_security_int(tf, time[2]))
+    if not (na(h1) or na(l1) or na(h3) or na(l3))
+        bool bullCond = h3 < l1
+        bool bearCond = l3 > h1
+
+        if bullCond
+            bool duplicated = false
+            int countBull = array.size(storage)
+            if countBull > 0
+                for i = 0 to countBull - 1
+                    Mfvg existing = array.get(storage, i)
+                    if existing.bullish and existing.top == l1 and existing.bottom == h3 and existing.sourceTime == time2
+                        duplicated := true
+                        break
+            if not duplicated
+                f_addFvg(tfIdx, tf, storage, true, l1, h3, midLow, midHigh, time2)
+
+        if bearCond
+            bool duplicated = false
+            int countBear = array.size(storage)
+            if countBear > 0
+                for i = 0 to countBear - 1
+                    Mfvg existing = array.get(storage, i)
+                    if not existing.bullish and existing.top == l3 and existing.bottom == h1 and existing.sourceTime == time2
+                        duplicated := true
+                        break
+            if not duplicated
+                f_addFvg(tfIdx, tf, storage, false, l3, h1, midLow, midHigh, time2)
+
+f_initLinePool(line[] pool) =>
+    if array.size(pool) == 0
+        for _ = 0 to maxFvgPerTf - 1
+            line ln = line.new(bar_index, 0, bar_index, 0, xloc.bar_index, extend=extend.none, color=color.new(color.white, 100), width=1)
+            array.push(pool, ln)
+
+f_hideLine(line ln) =>
+    line.set_xy1(ln, bar_index, 0)
+    line.set_xy2(ln, bar_index + 1, 0)
+    line.set_color(ln, color.new(color.white, 100))
+    line.set_style(ln, line.style_solid)
+    line.set_width(ln, 1)
+
+f_clearLines(line[] pool) =>
+    f_initLinePool(pool)
+    for i = 0 to array.size(pool) - 1
+        f_hideLine(array.get(pool, i))
+
+f_processFvgs(Mfvg[] storage, line[] topLines, line[] bottomLines) =>
+    int i = array.size(storage) - 1
+    while i >= 0
+        Mfvg fvg = array.get(storage, i)
+        bool removed = false
+        if fvg.bullish
+            if low < fvg.bottom
+                array.remove(storage, i)
+                removed := true
+            else if low <= fvg.top
+                fvg.mitigated := true
+        else
+            if high > fvg.bottom
+                array.remove(storage, i)
+                removed := true
+            else if high >= fvg.top
+                fvg.mitigated := true
+        if not removed
+            array.set(storage, i, fvg)
+        i -= 1
+
+f_updateDrawings(Mfvg[] storage, bool visible, string tag, line[] topLines, line[] bottomLines) =>
+    int count = array.size(storage)
+    f_initLinePool(topLines)
+    f_initLinePool(bottomLines)
+
+    if not visible or count == 0
+        f_clearLines(topLines)
+        f_clearLines(bottomLines)
+    else
+        for i = 0 to array.size(topLines) - 1
+            if i < count
+                Mfvg fvg = array.get(storage, i)
+                color baseColor = fvg.bullish ? bullColor : bearColor
+                color lineColor = fvg.mitigated ? mitigatedColor : baseColor
+                float yTop = fvg.top
+                float yBottom = fvg.bottom
+                int xLeft = fvg.left
+                int xRight = bar_index
+
+                line topLine = array.get(topLines, i)
+                line.set_xy1(topLine, xLeft, yTop)
+                line.set_xy2(topLine, xRight, yTop)
+                line.set_color(topLine, lineColor)
+                line.set_style(topLine, fvg.bullish ? line.style_solid : line.style_dashed)
+
+                line bottomLine = array.get(bottomLines, i)
+                line.set_xy1(bottomLine, xLeft, yBottom)
+                line.set_xy2(bottomLine, xRight, yBottom)
+                line.set_color(bottomLine, lineColor)
+                line.set_style(bottomLine, fvg.bullish ? line.style_solid : line.style_dashed)
+            else
+                f_hideLine(array.get(topLines, i))
+                f_hideLine(array.get(bottomLines, i))
+
+// ============================================================================
+// FVG 计算与绘制
+// ============================================================================
+
+f_detectFvgs(0, baseTf, baseFvgs)
+f_detectFvgs(1, midTf, midFvgs)
+f_detectFvgs(2, highTf, highFvgs)
+
+f_processFvgs(baseFvgs, baseTopLines, baseBottomLines)
+f_processFvgs(midFvgs, midTopLines, midBottomLines)
+f_processFvgs(highFvgs, highTopLines, highBottomLines)
+
+f_updateDrawings(baseFvgs, showBaseTf, "Base FVG", baseTopLines, baseBottomLines, 1)
+f_updateDrawings(midFvgs, showMidTf, "Mid FVG", midTopLines, midBottomLines, 2)
+f_updateDrawings(highFvgs, showHighTf, "High FVG", highTopLines, highBottomLines, 3)
+
+// ============================================================================
+// 交易环境判定
+// ============================================================================
+
+int baseSec = timeframe.in_seconds()
+int highSec = timeframe.in_seconds(highTf)
+int midSec = timeframe.in_seconds(midTf)
+int lookbackHighBars = math.max(1, math.round(20 * highSec / baseSec))
+
+int envIdx = f_findLastIndex(highFvgs, true)
+bool hasEnv = envIdx != na
+Mfvg envFvg = hasEnv ? array.get(highFvgs, envIdx) : Mfvg.new(0, "", true, na, na, na, na, 0, false, int(na), int(na))
+
+float envTopPlot = hasEnv ? envFvg.top : na
+float envBottomPlot = hasEnv ? envFvg.bottom : na
+
+if hasEnv
+    if envFvg.sourceTime != currentEnvId
+        currentEnvId := envFvg.sourceTime
+        envBreakIndex := na
+        envBreakHigh := na
+    if bar_index - envFvg.createdIndex > lookbackHighBars
+        hasEnv := false
+
+float hourHigh = hasEnv ? f_security(hourTf, high) : na
+float hourLow = hasEnv ? f_security(hourTf, low) : na
+bool hourOverlap = hasEnv and not na(hourHigh) and not na(hourLow) and hourLow <= envFvg.top and hourHigh >= envFvg.bottom
+
+if hasEnv and close > envFvg.top and na(envBreakIndex)
+    envBreakIndex := bar_index
+
+if not na(envBreakIndex)
+    int barsSinceBreak = bar_index - envBreakIndex + 1
+    envBreakHigh := ta.highest(high, math.min(barsSinceBreak, 2000))
+
+float envHighestPlot = not na(envBreakHigh) ? envBreakHigh : na
+
+int midLookback = hasEnv ? math.max(1, math.min(1000, math.round((bar_index - envFvg.createdIndex + 1) * baseSec / midSec))) : 1
+float minMidLow = hasEnv ? f_security(midTf, ta.lowest(low, midLookback)) : na
+
+int lastBaseBullIdx = f_findLastIndex(baseFvgs, true)
+int lastMidBullIdx = f_findLastIndex(midFvgs, true)
+Mfvg lastBaseBull = lastBaseBullIdx != na ? array.get(baseFvgs, lastBaseBullIdx) : Mfvg.new(0, "", true, na, na, na, na, 0, false, int(na), int(na))
+Mfvg lastMidBull = lastMidBullIdx != na ? array.get(midFvgs, lastMidBullIdx) : Mfvg.new(0, "", true, na, na, na, na, 0, false, int(na), int(na))
+
+float close4h = hasEnv ? f_security(highTf, close) : na
+float lowMidTf = hasEnv ? f_security(midTf, low) : na
+
+bool optionA = hasEnv and lastBaseBullIdx != na and not na(lastBaseBull.top)
+optionA := optionA and minMidLow >= envFvg.bottom
+optionA := optionA and low <= lastBaseBull.top and low >= lastBaseBull.bottom
+optionA := optionA and close > lastBaseBull.bottom
+
+bool optionB = hasEnv and lastMidBullIdx != na and not na(lastMidBull.top)
+optionB := optionB and close4h > envFvg.bottom
+optionB := optionB and lowMidTf <= lastMidBull.top and lowMidTf >= lastMidBull.bottom
+
+bool readyForEntry = hasEnv and hourOverlap and (optionA or optionB)
+
+// ============================================================================
+// 策略执行
+// ============================================================================
+
+if enableStrategy and readyForEntry
+    bool canEnter = allowMultiplePerEnv or currentEnvId != lastEntryEnvId
+    if canEnter and strategy.position_size == 0
+        float entryPrice = close
+        float stopPrice = envFvg.midLow
+        if na(stopPrice)
+            stopPrice := envFvg.bottom
+        float riskPoints = entryPrice - stopPrice
+        if riskPoints > syminfo.mintick
+            float targetPrice = na(envBreakHigh) ? entryPrice + riskPoints * maxRR : envBreakHigh
+            if targetPrice <= entryPrice
+                targetPrice := entryPrice + riskPoints * maxRR
+            if not na(targetPrice)
+                float rr = (targetPrice - entryPrice) / riskPoints
+                if rr > maxRR
+                    targetPrice := entryPrice + riskPoints * maxRR
+                strategy.entry("FVG-Long", strategy.long)
+                strategy.exit("FVG-TP", from_entry="FVG-Long", stop=stopPrice, limit=targetPrice)
+                lastEntryEnvId := currentEnvId
+
+plotshape(readyForEntry, title="多头触发", style=shape.triangleup, color=color.new(color.green, 0), size=size.tiny, location=location.belowbar, text="FVG Long")
+plotshape(optionA, title="条件A", style=shape.circle, color=color.new(color.blue, 0), size=size.tiny, location=location.bottom)
+plotshape(optionB, title="条件B", style=shape.circle, color=color.new(color.orange, 0), size=size.tiny, location=location.bottom, offset=-1)
+
+envTopLine = plot(envTopPlot, title="Env FVG Top", color=color.new(color.aqua, 0), linewidth=2)
+envBottomLine = plot(envBottomPlot, title="Env FVG Bottom", color=color.new(color.aqua, 0), linewidth=2)
+plot(envHighestPlot, title="Env Highest", color=color.new(color.fuchsia, 0), linewidth=1, style=plot.style_circles)
+fill(envTopLine, envBottomLine, color=color.new(color.aqua, 85))

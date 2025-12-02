@@ -1,0 +1,1056 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © LudoGH68, PY
+//@version=6
+indicator("SMC Structures and Multi-Timeframe FVG PY", overlay=true, max_boxes_count=500, max_lines_count=500, max_labels_count=500, max_bars_back=5000)
+ 
+// ==========================================================================================
+//                                     HELPER FUNCTIONS
+// ==========================================================================================
+
+// Helper to delete a line and its associated label
+delete_line_and_label(line l, label la) =>
+    if not na(l)
+        l.delete()
+    if not na(la)
+        la.delete()
+
+// Helper to get line style from string input
+getLineStyle(string lineOption) =>
+    switch lineOption
+        "┈" => line.style_dotted
+        "╌" => line.style_dashed
+        => line.style_solid
+
+// ==========================================================================================
+//                                     TYPE DEFINITIONS 
+// ==========================================================================================
+
+
+// ==========================================================================================
+//                                     USER INPUTS
+// ==========================================================================================
+
+//--------------------------------- FVG Settings -------------------------------------------//
+string fvg_group = "Fair Value Gap (FVG) - Multi-Timeframe"
+bool isFvgToShow = input.bool(true, title='Display FVGs', group=fvg_group, inline="fvg_main", display=display.none)
+int fvgHistoryNbr = input.int(4, 'Max Active FVGs per Timeframe', minval=1, maxval=50, group=fvg_group, tooltip="Controls how many recent FVGs are tracked for each timeframe before the oldest ones are discarded.")
+bool isMitigatedFvgToReduce = input.bool(false, title='Reduce Mitigated FVG Area', group=fvg_group)
+
+// FVG Colors
+color bullishFvgColor = input.color(color.new(color.green, 60), 'Bullish Color', group=fvg_group, inline="fvg_colors", display=display.none)
+color bearishFvgColor = input.color(color.new(color.red, 60), 'Bearish Color', group=fvg_group, inline="fvg_colors", display=display.none)
+color mitigatedFvgColor = input.color(color.new(#8c8c8c, 70), 'Mitigated Color', group=fvg_group, inline="fvg_colors", display=display.none)
+color fvg_border_color_bull = input.color(color.new(color.green, 100), 'Bullish Border', group=fvg_group, inline="fvg_border", display=display.none)
+color fvg_border_color_bear = input.color(color.new(color.red, 100), 'Bearish Border', group=fvg_group, inline="fvg_border", display=display.none)
+
+label_size = input.string(size.normal, "Labels size", [size.tiny, size.small, size.normal, size.large, size.huge], group = fvg_group, display=display.none)
+int fvgTFDistance = input.int(10, 'FVGs Timeframe Distance', minval=1, maxval=25, group=fvg_group, tooltip="Controls how many candles on the right side between a timeframe FVG and one higher timeframe FVG.")
+
+// Timeframe Inputs (up to 8)
+bool tf1_show = input.bool(true, "TF1", group = fvg_group, inline="tf1", display=display.none)
+string tf1 = input.timeframe("15", "", group=fvg_group, inline="tf1", display=display.none)
+string tf1_label = input.string("15", "", group=fvg_group, inline="tf1", display=display.none)
+
+bool tf2_show = input.bool(true, "TF2", group = fvg_group, inline="tf2", display=display.none)
+string tf2 = input.timeframe("60", "", group=fvg_group, inline="tf2", display=display.none)
+string tf2_label = input.string("1H", "", group=fvg_group, inline="tf2", display=display.none)
+
+bool tf3_show = input.bool(true, "TF3", group = fvg_group, inline="tf3", display=display.none)
+string tf3 = input.timeframe("240", "", group=fvg_group, inline="tf3", display=display.none)
+string tf3_label = input.string("4H", "", group=fvg_group, inline="tf3", display=display.none)
+
+bool tf4_show = input.bool(true, "TF4", group = fvg_group, inline="tf4", display=display.none)
+string tf4 = input.timeframe("D", "", group=fvg_group, inline="tf4", display=display.none)
+string tf4_label = input.string("1D", "", group=fvg_group, inline="tf4", display=display.none)
+
+bool tf5_show = input.bool(false, "TF5", group = fvg_group, inline="tf5", display=display.none)
+string tf5 = input.timeframe("W", "", group=fvg_group, inline="tf5", display=display.none)
+string tf5_label = input.string("1W", "", group=fvg_group, inline="tf5", display=display.none)
+
+bool tf6_show = input.bool(false, "TF6", group = fvg_group, inline="tf6", display=display.none)
+string tf6 = input.timeframe("1M", "", group=fvg_group, inline="tf6", display=display.none)
+string tf6_label = input.string("1M", "", group=fvg_group, inline="tf6", display=display.none)
+
+bool tf7_show = input.bool(false, "TF7", group = fvg_group, inline="tf7", display=display.none)
+string tf7 = input.timeframe("6M", "", group=fvg_group, inline="tf7", display=display.none)
+string tf7_label = input.string("6M", "", group=fvg_group, inline="tf7", display=display.none)
+
+bool tf8_show = input.bool(false, "TF8", group = fvg_group, inline="tf8", display=display.none)
+string tf8 = input.timeframe("12M", "", group=fvg_group, inline="tf8", display=display.none)
+string tf8_label = input.string("12M", "", group=fvg_group, inline="tf8", display=display.none)
+
+bool ltf_hide = input.bool(true, "Hide FVG's lowers than enabled timeframes?", display=display.none)
+bool isAddBarIndex = input.bool(false, "Show FVG BarIndex?", display=display.none)
+
+//--------------------------------- Structure Settings -------------------------------------//
+string structures_group = "Structures (BOS/CHoCH) - Current Timeframe"
+bool isStructBodyCandleBreak = input.bool(true, title='Break with Candle\'s Body', group=structures_group, display=display.none)
+bool isCurrentStructToShow = input.bool(true, title='Display Current Structure', group=structures_group, display=display.none)
+
+color bullishBosColor = input.color(color.silver, 'Bullish BOS Color', group=structures_group, display=display.none)
+color bearishBosColor = input.color(color.silver, 'Bearish BOS Color', group=structures_group, display=display.none)
+string bosLineStyleOption = input.string("─", title="BOS Style", group=structures_group, options=["─", "┈", "╌"], display=display.none)
+bosLineStyle = getLineStyle(bosLineStyleOption)
+int bosLineWidth = input.int(1, title="BOS Width", group=structures_group, minval=1, maxval=5, display=display.none)
+
+color bullishChochColor = input.color(color.yellow, 'Bullish CHoCH Color', group=structures_group, display=display.none)
+color bearishChochColor = input.color(color.yellow, 'Bearish CHoCH Color', group=structures_group, display=display.none)
+string chochLineStyleOption = input.string("─", title="CHoCH Style", group=structures_group, options=["─", "┈", "╌"], display=display.none)
+chochLineStyle = getLineStyle(chochLineStyleOption)
+int chochLineWidth = input.int(1, title="CHoCH Width", group=structures_group, minval=1, maxval=5, display=display.none)
+
+color currentStructColor = input.color(color.blue, 'Current structure Color', group=structures_group, display=display.none)
+string currentStructLineStyleOption = input.string("─", title="Current structure Style", group=structures_group, options=["─", "┈", "╌"], display=display.none)
+currentStructLineStyle = getLineStyle(currentStructLineStyleOption)
+int currentStructLineWidth = input.int(1, title="Current structure Width", group=structures_group, minval=1, maxval=5, display=display.none)
+int structHistoryNbr = input.int(10, 'Number of Breaks to Show', minval=1, maxval=50, group=structures_group, display=display.none)
+
+//--------------------------------- Fibonacci Settings -------------------------------------//
+string fibo_group = "Structure Fibonacci"
+bool isFibo1ToShow = input.bool(false, title = "", group=fibo_group, inline = "Fibo1", display=display.none)
+float fibo1Value = input.float(0.786, title = "", group=fibo_group, inline = "Fibo1", display=display.none)
+color fibo1Color = input.color(#64b5f6, title = "", group=fibo_group, inline = "Fibo1", display=display.none)
+string fibo1StyleOption = input.string("─", title = "", group=fibo_group, options=["─", "┈", "╌"], inline = "Fibo1", display=display.none)
+int fibo1LineWidth = input.int(1, title = "", group=fibo_group, minval=1, maxval=5, inline = "Fibo1", display=display.none)
+
+bool isFibo2ToShow = input.bool(false, title = "", group=fibo_group, inline = "Fibo2", display=display.none)
+float fibo2Value = input.float(0.705, title = "", group=fibo_group, inline = "Fibo2", display=display.none)
+color fibo2Color = input.color(#f23645, title = "", group=fibo_group, inline = "Fibo2", display=display.none)
+string fibo2StyleOption = input.string("─", title = "", group=fibo_group, options=["─", "┈", "╌"], inline = "Fibo2", display=display.none)
+int fibo2LineWidth = input.int(1, title = "", group=fibo_group, minval=1, maxval=5, inline = "Fibo2", display=display.none)
+
+bool isFibo3ToShow = input.bool(false, title = "", group=fibo_group, inline = "Fibo3", display=display.none)
+float fibo3Value = input.float(0.618, title = "", group=fibo_group, inline = "Fibo3", display=display.none)
+color fibo3Color = input.color(#089981, title = "", group=fibo_group, inline = "Fibo3", display=display.none)
+string fibo3StyleOption = input.string("─", title = "", group=fibo_group, options=["─", "┈", "╌"], inline = "Fibo3", display=display.none)
+int fibo3LineWidth = input.int(1, title = "", group=fibo_group, minval=1, maxval=5, inline = "Fibo3", display=display.none)
+
+bool isFibo4ToShow = input.bool(false, title = "", group=fibo_group, inline = "Fibo4", display=display.none)
+float fibo4Value = input.float(0.5, title = "", group=fibo_group, inline = "Fibo4", display=display.none)
+color fibo4Color = input.color(#4caf50, title = "", group=fibo_group, inline = "Fibo4", display=display.none)
+string fibo4StyleOption = input.string("─", title = "", group=fibo_group, options=["─", "┈", "╌"], inline = "Fibo4", display=display.none)
+int fibo4LineWidth = input.int(1, title = "", group=fibo_group, minval=1, maxval=5, inline = "Fibo4", display=display.none)
+
+bool isFibo5ToShow = input.bool(false, title = "", group=fibo_group, inline = "Fibo5", display=display.none)
+float fibo5Value = input.float(0.382, title = "", group=fibo_group, inline = "Fibo5", display=display.none)
+color fibo5Color = input.color(#81c784, title = "", group=fibo_group, inline = "Fibo5", display=display.none)
+string fibo5StyleOption = input.string("─", title = "", group=fibo_group, options=["─", "┈", "╌"], inline = "Fibo5", display=display.none)
+int fibo5LineWidth = input.int(1, title = "", group=fibo_group, minval=1, maxval=5, inline = "Fibo5", display=display.none)
+
+// ==========================================================================================
+//                                 FVG GLOBAL VARIABLES
+// ==========================================================================================
+type Helper
+    string name         = "Helper"
+
+type FVG
+    int tf_idx
+    string tf
+    string tf_label
+    int tf_num
+    box _box
+    bool _type
+    bool _isMitigated
+    bool _isDrawn
+    int left
+    float top
+    int right
+    float bottom
+    string extend=extend.none
+    string border_style=line.style_solid
+    int border_width=1
+    color bgcolor
+    color border_color
+    string _text
+    color text_color=color.white
+    string text_halign=text.align_right
+    string text_size
+
+Helper helper = Helper.new()
+
+method Validtimeframe(Helper helper, tf) =>
+    helper.name := tf
+    n1 = timeframe.in_seconds()
+    n2 = timeframe.in_seconds(tf)
+    n1 <= n2
+
+// Arrays variable
+var FVG[] fvgBox1 = array.new<FVG>()
+var FVG[] fvgBox2 = array.new<FVG>()
+var FVG[] fvgBox3 = array.new<FVG>()
+var FVG[] fvgBox4 = array.new<FVG>()
+var FVG[] fvgBox5 = array.new<FVG>()
+var FVG[] fvgBox6 = array.new<FVG>()
+var FVG[] fvgBox7 = array.new<FVG>()
+var FVG[] fvgBox8 = array.new<FVG>()
+
+getIsTFShow(int tf_idx) =>
+    k = switch tf_idx
+        0 => tf1_show
+        1 => tf2_show
+        2 => tf3_show
+        3 => tf4_show
+        4 => tf5_show
+        5 => tf6_show
+        6 => tf7_show
+        7 => tf8_show
+
+getTFLabel(int tf_idx) =>
+    k = switch tf_idx
+        0 => tf1_label
+        1 => tf2_label
+        2 => tf3_label
+        3 => tf4_label
+        4 => tf5_label
+        5 => tf6_label
+        6 => tf7_label
+        7 => tf8_label
+
+// ==========================================================================================
+//                                  FVG CORE FUNCTIONS
+// ==========================================================================================
+
+//
+//
+// ==========================================================================================
+//                              FAIR VALUE GAP FINDER PROCESSING                                                                         
+// ==========================================================================================
+//
+//
+
+findFVGs (int tf_idx, string tf, string tf_label, int tf_num, FVG[] fvgBox) =>
+
+    if (not ltf_hide or (ltf_hide and helper.Validtimeframe(tf)))
+        [htf_high1, htf_low1, htf_high3, htf_low3, htf_time2] = request.security(syminfo.tickerid, tf, [high[1], low[1], high[3], low[3], time[2]], lookahead = barmerge.lookahead_on)
+        isBullishFVG = htf_high3 < htf_low1
+        isBearishFVG = htf_low3 > htf_high1
+
+        // Bullish FVG process
+        if isBullishFVG
+            //find such FVG has already existed.
+            bool isDuplicated=false
+            for [ie, fvgE] in fvgBox
+                if (fvgE.top==htf_low1) and (fvgE.bottom==htf_high3)
+                    isDuplicated:=true
+
+            if not isDuplicated
+                // Add FVG into FVG's array
+                //box _box = box.new(left=bar_index - 2, top=htf_low1, right=bar_index+tf_idx, bottom=htf_high3, extend = extend.none, border_style=line.style_solid, border_width=1, bgcolor=bullishFvgColor, border_color=color.new(color.green, 100), text=tf_label, text_color=color.white, text_halign=text.align_right, text_size = label_size)
+                FVG fvg1 = FVG.new(tf_idx, tf, tf_label, tf_num, na, true, false, false, left=bar_index - 2, top=htf_low1, right=0, bottom=htf_high3, extend = extend.none, border_style=line.style_solid, border_width=1, bgcolor=bullishFvgColor, border_color=color.new(color.green, 100), _text=tf_label, text_color=color.white, text_halign=text.align_right, text_size = label_size)
+                fvgBox.push(fvg1)
+                log.warning("added a BullFVG."+str.tostring(tf_idx))
+
+                // Check if FVG to show is upper than user parameter
+                if(fvgBox.size() > fvgHistoryNbr + 1)
+                    // Delete the FVG and its index from arrays
+                    log.info("deleting BullFVG:"+str.tostring(fvgBox.size())+","+str.tostring(box.all.size()))
+                    //box.delete(fvgBox.get(0)._box)
+                    box b=fvgBox.get(0)._box
+                    if not na(b)
+                        box.delete(b)
+                    fvgBox.remove(0)
+
+        // Bearish FVG process
+        if isBearishFVG
+            //find such FVG has already existed.
+            bool isDuplicated=false
+            for [ie, fvgE] in fvgBox
+                if (fvgE.top==htf_low3) and (fvgE.bottom==htf_high1)
+                    isDuplicated:=true
+
+            if not isDuplicated
+                // Add FVG into FVG's array
+                //box _box = box.new(left=bar_index - 2, top=htf_low3, right=bar_index+tf_idx, bottom=htf_high1, extend = extend.none, border_style=line.style_solid, border_width=1, bgcolor=bearishFvgColor, border_color=color.new(color.red, 100), text=tf_label, text_color=color.white, text_halign=text.align_right, text_size = label_size)
+                FVG fvg1 = FVG.new(tf_idx, tf, tf_label, tf_num, na, false, false, false, left=bar_index - 2, top=htf_low3, right=0, bottom=htf_high1, extend = extend.none, border_style=line.style_solid, border_width=1, bgcolor=bearishFvgColor, border_color=color.new(color.red, 100), _text=tf_label, text_color=color.white, text_halign=text.align_right, text_size = label_size)
+                fvgBox.push(fvg1)
+                log.warning("added a BearFVG."+str.tostring(tf_idx))
+
+                // Check if FVG to show is upper than user parameter
+                if(fvgBox.size() > fvgHistoryNbr + 1)
+                    // Delete the FVG and its index from arrays
+                    log.info("deleting BearFVG:"+str.tostring(fvgBox.size())+","+str.tostring(box.all.size()))
+                    //box.delete(fvgBox.get(0)._box)
+                    box b=fvgBox.get(0)._box
+                    if not na(b)
+                        box.delete(b)
+                    fvgBox.remove(0)
+        
+        //log.info("findFVGs fvgBox.size():"+str.tostring(fvgBox.size()))
+
+
+//label.new(bar_index, high, str.tostring(bar_index))
+
+// Draw FVG
+FVGDraw () =>
+    for i1 = 0 to 7
+        if (getIsTFShow(i1))
+            FVG[] fvgBox = switch (i1)
+                0 => fvgBox1
+                1 => fvgBox2
+                2 => fvgBox3
+                3 => fvgBox4
+                4 => fvgBox5
+                5 => fvgBox6
+                6 => fvgBox7
+                7 => fvgBox8
+            //log.info("FVGDraw i1:"+str.tostring(i1)+","+str.tostring(fvgBox1.size())+","+str.tostring(fvgBox.size()))
+            // Loop into all values of the array
+            for [index, value] in fvgBox
+                //log.info("FVGDraw i1,index:"+str.tostring(i1)+","+str.tostring(index))
+                if (not value._isDrawn)
+                    value._isDrawn:=true
+                    // Processing FVG
+                    value._box:=box.new(left=value.left, top=value.top, right=bar_index+value.tf_num*fvgTFDistance, bottom=value.bottom, extend = value.extend, border_style=value.border_style, border_width=value.border_width, bgcolor=value.bgcolor, border_color=value.border_color, text=value._text+(isAddBarIndex?str.tostring(bar_index):""), text_color=value.text_color, text_halign=value.text_halign, text_size = value.text_size)
+                    log.warning("added a box, bar,bardist:"+str.tostring(bar_index)+","+str.tostring(value.tf_num*fvgTFDistance))
+                
+                if(value._type)
+                    // Check if FVG has been totally mitigated
+                    //box.set_bgcolor(value,bullishFvgColor)
+                    if(low <= box.get_bottom(value._box))
+                        box.delete(value._box)
+                        fvgBox.remove(index)
+                        log.info("FVGDraw bullFVG removed.")
+                    else 
+                        if(low < box.get_top((value._box)))
+                            box.set_bgcolor(value._box, mitigatedFvgColor)
+                            
+                            // Mitigated FVG Alert
+                            if(not(value._isMitigated))
+                                alert("FVG has been mitigated", alert.freq_once_per_bar)
+                                value._isMitigated:=true
+
+                            // Reduce FVG if needed
+                            if(isMitigatedFvgToReduce)
+                                box.set_text(value._box, value.tf_label+"X")
+                                box.set_text_formatting(value._box, text.format_italic)
+                                box.set_top(value._box, low)
+
+                        box.set_right(value._box, bar_index+ value.tf_num*fvgTFDistance)
+                // Processing bearish FVG
+                else
+                    // Check if FVG has been mitigated
+                    //box.set_bgcolor(value,bearishFvgColor)
+                    if(high >= box.get_top(value._box))
+                        box.delete(value._box)
+                        fvgBox.remove(index)
+                        log.info("FVGDraw bearFVG removed.")
+                    else
+                        if(high > box.get_bottom(value._box))
+                            box.set_bgcolor(value._box, mitigatedFvgColor)    
+
+                            // Mitigated FVG Alert
+                            if(not(value._isMitigated))
+                                alert("FVG has been mitigated", alert.freq_once_per_bar)
+                                value._isMitigated:=true
+
+                            // Reduce FVG if needed
+                            if(isMitigatedFvgToReduce)
+                                box.set_text(value._box, value.tf_label+"X")
+                                box.set_text_formatting(value._box, text.format_italic)
+                                box.set_bottom(value._box, high)
+
+                        box.set_right(value._box, bar_index+ value.tf_num*fvgTFDistance)
+
+
+if isFvgToShow
+    int tf_num=0
+    if tf8_show
+        findFVGs(7, tf8, tf8_label, tf_num, fvgBox8)
+        tf_num:=tf_num+1
+    if tf7_show
+        findFVGs(6, tf7, tf7_label, tf_num, fvgBox7)
+        tf_num:=tf_num+1
+    if tf6_show
+        findFVGs(5, tf6, tf6_label, tf_num, fvgBox6)
+        tf_num:=tf_num+1
+    if tf5_show
+        findFVGs(4, tf5, tf5_label, tf_num, fvgBox5)
+        tf_num:=tf_num+1
+    if tf4_show
+        findFVGs(3, tf4, tf4_label, tf_num, fvgBox4)
+        tf_num:=tf_num+1
+    if tf3_show
+        findFVGs(2, tf3, tf3_label, tf_num, fvgBox3)
+        tf_num:=tf_num+1
+    if tf2_show
+        findFVGs(1, tf2, tf2_label, tf_num, fvgBox2)
+        tf_num:=tf_num+1
+    if tf1_show
+        findFVGs(0, tf1, tf1_label, tf_num, fvgBox1)
+        tf_num:=tf_num+1
+    FVGDraw()
+
+// ==========================================================================================
+//                             STRUCTURES HELPER FUNCTIONS
+// ==========================================================================================
+
+get_structure_highest_bar(int lookback) =>
+	var int idx = 0
+    int maxBar1 = ta.highestbars(high, lookback)
+    //int maxBar1B = 0
+    int maxBar = bar_index > lookback ? maxBar1 : ta.highestbars(high, bar_index + 1)
+	for i = 0 to lookback - 1 by 1
+		if high[i+1] > high[i+2] and high[i] <= high[i+1] and ((i+1) * -1) >= maxBar
+			idx := (i+1) * -1
+	idx := idx == 0 ? maxBar : idx
+
+get_structure_lowest_bar(int lookback) =>
+	var int idx = 0
+    int minBar1 = ta.lowestbars(low, lookback)
+    //int minBar1B = 0
+    int minBar = bar_index > lookback ? minBar1 : ta.lowestbars(low, bar_index + 1)
+	for i = 0 to lookback - 1 by 1
+		if low[i+1] < low[i+2] and low[i] >= low[i+1]  and ((i+1) * -1) >= minBar
+			idx := (i+1) * -1
+	idx := idx == 0 ? minBar : idx
+
+// ==========================================================================================
+//                             STRUCTURES GLOBAL VARIABLES
+// ==========================================================================================
+var structureLines = array.new_line(0)
+var structureLabels = array.new_label(0)
+var float structureHigh = high
+var float structureLow = low
+var int structureHighStartIndex = bar_index
+var int structureLowStartIndex = bar_index
+var int structureDirection = 0 // 0 = undefined, 1 = bearish, 2 = bullish
+var line structureHighLine = na
+var line structureLowLine = na
+var bool isBOSAlert = false
+var bool isCHOCHAlert = false
+var line fibo1Line = na, var line fibo2Line = na, var line fibo3Line = na, var line fibo4Line = na, var line fibo5Line = na
+var label fibo1Label = na, var label fibo2Label = na, var label fibo3Label = na, var label fibo4Label = na, var label fibo5Label = na
+
+// ==========================================================================================
+//                                 MAIN SCRIPT LOGIC
+// ==========================================================================================
+
+
+//--------------------------------- Structures Processing ----------------------------------//
+// Initialize value for bar 0
+series float highestB10 = ta.highest(10)
+series int highestBarB10 = ta.highestbars(high, 10)
+series float lowestB10 = ta.lowest(10)
+series int lowestBarB10 = ta.lowestbars(low, 10)
+series float highestB10B = ta.highest(bar_index + 1)
+series int highestBarB10B = ta.highestbars(high, bar_index + 1) 
+series float lowestB10B = ta.lowest(bar_index + 1)
+series int lowestBarB10B = ta.lowestbars(low, bar_index + 1)
+series float highest = 0
+series int highestBar = 0
+series float lowest = 0
+series int lowestBar = 0
+if(bar_index == 0)
+    structureHighStartIndex := bar_index
+    structureLowStartIndex  := bar_index
+    structureHigh := high
+    structureLow  := low 
+else if (bar_index > 10)
+    highest := highestB10
+    highestBar := highestBarB10
+    lowest := lowestB10
+    lowestBar := lowestBarB10
+else
+    highest := highestB10B
+    highestBar := highestBarB10B
+    lowest := lowestB10B
+    lowestBar := lowestBarB10B
+
+structureMaxBar = bar_index + get_structure_highest_bar(10)
+structureMinBar = bar_index + get_structure_lowest_bar(10)
+lowStructBreakPrice = isStructBodyCandleBreak ? close : low
+highStructBreakPrice = isStructBodyCandleBreak ? close : high
+isStuctureLowBroken = (lowStructBreakPrice < structureLow and lowStructBreakPrice[1] >= structureLow and lowStructBreakPrice[2] >= structureLow and lowStructBreakPrice[3] >= structureLow and bar_index[1] >  structureLowStartIndex and bar_index[2] >  structureLowStartIndex and bar_index[3] >  structureLowStartIndex) or (structureDirection == 2 and lowStructBreakPrice < structureLow)
+isStructureHighBroken = (highStructBreakPrice > structureHigh and highStructBreakPrice[1] <= structureHigh and highStructBreakPrice[2] <= structureHigh and highStructBreakPrice[3] <= structureHigh and bar_index[1] >  structureHighStartIndex and bar_index[2] >  structureHighStartIndex and bar_index[3] >  structureHighStartIndex) or (structureDirection == 1 and highStructBreakPrice > structureHigh)
+ 
+
+//if((low < structureLow and low[1] >= structureLow and low[2] >= structureLow and low[3] >= structureLow and bar_index[1] >  structureLowStartIndex and bar_index[2] >  structureLowStartIndex and bar_index[3] >  structureLowStartIndex) or (structureDirection == 2 and low < structureLow))
+if(isStuctureLowBroken)
+    // Check if structures to show is upper than user parameter
+    if(array.size(structureLines) >= structHistoryNbr)
+
+        // Delete the line and its index from arrays
+        delete_line_and_label(array.get(structureLines, 0), array.get(structureLabels, 0))
+        array.remove(structureLabels, 0)
+        array.remove(structureLines, 0)
+        
+
+    // Create BOS line
+    if(structureDirection == 1)  
+        array.push(structureLines, line.new(structureLowStartIndex, structureLow, bar_index, structureLow, xloc=xloc.bar_index, extend=extend.none, color=bearishBosColor, style=bosLineStyle, width=bosLineWidth))
+        array.push(structureLabels, label.new((bar_index + structureLowStartIndex) / 2, structureLow, text="BOS", style=label.style_none, textcolor=bearishBosColor))
+        isBOSAlert := true
+
+    // Create CHoCH line
+    else
+        array.push(structureLines, line.new(structureLowStartIndex, structureLow, bar_index, structureLow, xloc=xloc.bar_index, extend=extend.none, color=bearishChochColor, style=chochLineStyle, width=chochLineWidth))
+        array.push(structureLabels, label.new((bar_index + structureLowStartIndex) / 2, structureLow, text="CHoCH", style=label.style_none, textcolor=bearishChochColor))
+        isCHOCHAlert := true
+
+    // Update values for new structure 
+    structureDirection := 1
+    structureHighStartIndex := structureMaxBar
+    structureLowStartIndex  := bar_index
+    structureHigh :=  high[bar_index - structureHighStartIndex] //highest
+    structureLow  := low
+
+// Check for breakout
+else if(isStructureHighBroken)
+    
+    // Check if structures to show is upper than user parameter
+    if(array.size(structureLines) >= structHistoryNbr)
+
+        // Delete the line and its index from arrays
+        delete_line_and_label(array.get(structureLines, 0), array.get(structureLabels, 0))
+        array.remove(structureLabels, 0)
+        array.remove(structureLines, 0)
+
+    // Create BOS line
+    if(structureDirection == 2)  
+        array.push(structureLines, line.new(structureHighStartIndex, structureHigh, bar_index, structureHigh, xloc=xloc.bar_index, extend=extend.none, color=bullishBosColor, style=bosLineStyle, width=bosLineWidth))
+        array.push(structureLabels, label.new((bar_index + structureHighStartIndex) / 2, structureHigh, text="BOS", style=label.style_none, textcolor=bullishBosColor))
+        isBOSAlert := true
+
+    // Create CHoCH line
+    else
+        array.push(structureLines, line.new(structureHighStartIndex, structureHigh, bar_index, structureHigh, xloc=xloc.bar_index, extend=extend.none, color=bullishChochColor, style=chochLineStyle, width=chochLineWidth))
+        array.push(structureLabels, label.new((bar_index + structureHighStartIndex) / 2, structureHigh, text="CHoCH", style=label.style_none, textcolor=bullishChochColor))
+        isCHOCHAlert := true
+
+    // Update values for new structure
+    structureDirection := 2
+    structureHighStartIndex := bar_index 
+    structureLowStartIndex  := structureMinBar
+    structureHigh := high 
+    structureLow  := low[bar_index - structureLowStartIndex] //lowest
+else
+    isBOSAlert := false
+    isCHOCHAlert := false
+    if(high > structureHigh and (structureDirection == 0 or structureDirection == 2))
+        if(not(isStructBodyCandleBreak) or not(isStructBodyCandleBreak and bar_index[1] > structureHighStartIndex and bar_index[2] >  structureHighStartIndex and bar_index[3] > structureHighStartIndex))
+            structureHigh := high
+            structureHighStartIndex := bar_index
+    else if(low < structureLow and (structureDirection == 0 or structureDirection == 1))
+        if(not(isStructBodyCandleBreak) or not(isStructBodyCandleBreak and bar_index[1] > structureLowStartIndex and bar_index[2] > structureLowStartIndex and bar_index[3] > structureLowStartIndex))
+            structureLow := low
+            structureLowStartIndex := bar_index
+
+
+if isCurrentStructToShow
+    delete_line_and_label(structureHighLine, na)
+    delete_line_and_label(structureLowLine, na)
+    structureHighStartIndex := math.max(structureHighStartIndex, bar_index - 4600)
+    structureLowStartIndex := math.max(structureLowStartIndex, bar_index - 4600)
+    if (structureHighStartIndex >= 0 and structureHighStartIndex <= bar_index)
+        structureHighLine := line.new(structureHighStartIndex, structureHigh, bar_index, structureHigh, xloc.bar_index, color=currentStructColor, style = currentStructLineStyle, width = currentStructLineWidth)
+    if (structureLowStartIndex >= 0 and structureLowStartIndex <= bar_index)
+        structureLowLine := line.new(structureLowStartIndex, structureLow, bar_index, structureLow, xloc.bar_index, color=currentStructColor, style = currentStructLineStyle, width = currentStructLineWidth)
+
+    float structureRange = math.abs(structureHigh - structureLow)
+
+    if isFibo1ToShow
+        delete_line_and_label(fibo1Line, fibo1Label)
+        float fiboPrice = structureDirection != 1 ? structureLow + (structureRange * fibo1Value) : structureHigh - (structureRange * fibo1Value)
+        int fiboStartIndex = structureDirection != 1 ? structureLowStartIndex : structureHighStartIndex
+        fibo1Line := line.new(fiboStartIndex, fiboPrice, bar_index, fiboPrice, xloc.bar_index, color=fibo1Color, style=getLineStyle(fibo1StyleOption), width=fibo1LineWidth)
+        fibo1Label := label.new(bar_index, fiboPrice, text=str.tostring(fibo1Value), style=label.style_none, textcolor=fibo1Color, xloc=xloc.bar_index, textalign=text.align_right)
+    if isFibo2ToShow
+        delete_line_and_label(fibo2Line, fibo2Label)
+        float fiboPrice = structureDirection != 1 ? structureLow + (structureRange * fibo2Value) : structureHigh - (structureRange * fibo2Value)
+        int fiboStartIndex = structureDirection != 1 ? structureLowStartIndex : structureHighStartIndex
+        fibo2Line := line.new(fiboStartIndex, fiboPrice, bar_index, fiboPrice, xloc.bar_index, color=fibo2Color, style=getLineStyle(fibo2StyleOption), width=fibo2LineWidth)
+        fibo2Label := label.new(bar_index, fiboPrice, text=str.tostring(fibo2Value), style=label.style_none, textcolor=fibo2Color, xloc=xloc.bar_index, textalign=text.align_right)
+    if isFibo3ToShow
+        delete_line_and_label(fibo3Line, fibo3Label)
+        float fiboPrice = structureDirection != 1 ? structureLow + (structureRange * fibo3Value) : structureHigh - (structureRange * fibo3Value)
+        int fiboStartIndex = structureDirection != 1 ? structureLowStartIndex : structureHighStartIndex
+        fibo3Line := line.new(fiboStartIndex, fiboPrice, bar_index, fiboPrice, xloc.bar_index, color=fibo3Color, style=getLineStyle(fibo3StyleOption), width=fibo3LineWidth)
+        fibo3Label := label.new(bar_index, fiboPrice, text=str.tostring(fibo3Value), style=label.style_none, textcolor=fibo3Color, xloc=xloc.bar_index, textalign=text.align_right)
+    if isFibo4ToShow
+        delete_line_and_label(fibo4Line, fibo4Label)
+        float fiboPrice = structureDirection != 1 ? structureLow + (structureRange * fibo4Value) : structureHigh - (structureRange * fibo4Value)
+        int fiboStartIndex = structureDirection != 1 ? structureLowStartIndex : structureHighStartIndex
+        fibo4Line := line.new(fiboStartIndex, fiboPrice, bar_index, fiboPrice, xloc.bar_index, color=fibo4Color, style=getLineStyle(fibo4StyleOption), width=fibo4LineWidth)
+        fibo4Label := label.new(bar_index, fiboPrice, text=str.tostring(fibo4Value), style=label.style_none, textcolor=fibo4Color, xloc=xloc.bar_index, textalign=text.align_right)
+    if isFibo5ToShow
+        delete_line_and_label(fibo5Line, fibo5Label)
+        float fiboPrice = structureDirection != 1 ? structureLow + (structureRange * fibo5Value) : structureHigh - (structureRange * fibo5Value)
+        int fiboStartIndex = structureDirection != 1 ? structureLowStartIndex : structureHighStartIndex
+        fibo5Line := line.new(fiboStartIndex, fiboPrice, bar_index, fiboPrice, xloc.bar_index, color=fibo5Color, style=getLineStyle(fibo5StyleOption), width=fibo5LineWidth)
+        fibo5Label := label.new(bar_index, fiboPrice, text=str.tostring(fibo5Value), style=label.style_none, textcolor=fibo5Color, xloc=xloc.bar_index, textalign=text.align_right)
+
+//----------------------------------- Alert Conditions -------------------------------------//
+alertcondition(condition = isBOSAlert, title = "BOS", message = "BOS occurred")
+alertcondition(condition = isCHOCHAlert, title = "CHOCH", message = "CHOCH occurred")
+
+
+//=========== MA PART============//
+
+
+//************  Globals
+color val_1_color_default = #1565C0
+color val_2_color_default = #FF3232
+color val_3_color_default = #800080
+color val_4_color_default = color.white
+color val_5_color_default = color.yellow
+color val_6_color_default = color.green
+color val_7_color_default = #e17d9e
+color val_8_color_default = #40E0D0
+color val_9_color_default = #82FFC9
+color val_10_color_default = #00EEFF
+
+
+//********** Functions
+// scale to the range of [min, max]
+_funcMinMax(X, p, min, max) =>
+    hi = ta.highest(X, p)
+    lo = ta.lowest(X, p)
+    (max - min) * (X - lo) / (hi - lo) + min
+
+_funcLineStyle(_type) =>
+    switch _type
+        "Circles" => plot.style_circles
+        "Stepline" => plot.style_stepline
+        "Line With Breaks" => plot.style_linebr
+        "Step Line With Diamonds" => plot.style_stepline_diamond
+        =>
+            plot.style_line
+
+_funcSetFinalVal(_tpl, _type_1, _type_2, _type_3, _type_4, _type_5, _type_6, _type_7, _type_8, _maTypeDefault, _length_1, _length_2, _length_3, _length_4, _length_5, _length_6, _length_7, _length_8, _maLengthDefault) =>
+    string _tmpMaType = _maTypeDefault
+    int _tmpMaLength = _maLengthDefault
+    if _tpl == 'EMA 20-50-100-200'
+        _tmpMaType := _type_1
+        _tmpMaLength := _length_1
+        _tmpMaLength
+    else if _tpl == 'SMA 5-10-20-50-200'
+        _tmpMaType := _type_2
+        _tmpMaLength := _length_2
+        _tmpMaLength
+    else if _tpl == 'EMA Fibonacci 21-55-89-144-233'
+        _tmpMaType := _type_3
+        _tmpMaLength := _length_3
+        _tmpMaLength
+    else if _tpl == 'EMA 20-50-100-200 / SMA 100-200'
+        _tmpMaType := _type_4
+        _tmpMaLength := _length_4
+        _tmpMaLength
+    else if _tpl == 'EMA Golden/Death Cross 50-200'
+        _tmpMaType := _type_5
+        _tmpMaLength := _length_5
+        _tmpMaLength
+    else if _tpl == 'SMA Golden/Death Cross 50-200'
+        _tmpMaType := _type_6
+        _tmpMaLength := _length_6
+        _tmpMaLength
+    else if _tpl == 'HMA Cross 21-34'
+        _tmpMaType := _type_7
+        _tmpMaLength := _length_7
+        _tmpMaLength
+    else if _tpl == 'CSS Long Short Trading'
+        _tmpMaType := _type_8
+        _tmpMaLength := _length_8
+        _tmpMaLength
+    [_tmpMaType, _tmpMaLength]
+
+// Chande Momentum Oscillator
+_funcCMO(_src, _period) =>
+    tmpMomentum = ta.change(_src)
+    tmpSummaryUp = math.sum(math.max(tmpMomentum, 0), _period)
+    tmpSummaryDown = math.sum(-math.min(tmpMomentum, 0), _period)
+    math.abs((tmpSummaryUp - tmpSummaryDown) / (tmpSummaryUp + tmpSummaryDown))
+
+// Triple EMA (TEMA)
+_funcTEMA(_src, _period) =>
+    ema1 = ta.ema(_src, _period)
+    ema2 = ta.ema(ema1, _period)
+    ema3 = ta.ema(ema2, _period)
+    3 * (ema1 - ema2) + ema3
+
+// Double Expotential Moving Average (DEMA)
+_funcDEMA(_src, _period) =>
+    2 * ta.ema(_src, _period) - ta.ema(ta.ema(_src, _period), _period)
+
+// Exponential Hull Moving Average (EHMA)
+_funcEHMA(_src, _period) =>
+    tmpVal = math.max(2, _period)
+    ta.ema(2 * ta.ema(_src, tmpVal / 2) - ta.ema(_src, tmpVal), math.round(math.sqrt(tmpVal)))
+
+// Kaufman's Adaptive Moving Average (KAMA)
+_funcKAMA(_src, _period) =>
+    tmpVal = 0.0
+    sum_1 = math.sum(math.abs(_src - _src[1]), _period)
+    sum_2 = math.sum(math.abs(_src - _src[1]), _period)
+    tmpVal := nz(tmpVal[1]) + math.pow((sum_1 != 0 ? math.abs(_src - _src[_period]) / sum_2 : 0) * (0.666 - 0.0645) + 0.0645, 2) * (_src - nz(tmpVal[1]))
+    tmpVal
+
+// Variable Index Dynamic Average (VIDYA)
+_funcVIDYA(_src, _period) =>
+    cmo = _funcCMO(_src, _period)
+    alpha = 2 / (_period + 1)
+    vidya = 0.0
+    vidya := _src * alpha * cmo + nz(vidya[1]) * (1 - alpha * cmo)
+    vidya
+
+// Coefficient of Variation Weighted Moving Average (COVWMA)
+_funcCOVWMA(_src, _period) =>
+    _coefficientOfVariation = ta.stdev(_src, _period) / ta.sma(_src, _period)
+    _cw = _src * _coefficientOfVariation
+    math.sum(_cw, _period) / math.sum(_coefficientOfVariation, _period)
+
+// Fractal Adaptive Moving Average (FRAMA)
+_funcFRAMA(_src, _period) =>
+    _coefficient = -4.6
+    _n3 = (ta.highest(high, _period) - ta.lowest(low, _period)) / _period
+    _hd2 = ta.highest(high, _period / 2)
+    _ld2 = ta.lowest(low, _period / 2)
+    _n2 = (_hd2 - _ld2) / (_period / 2)
+    _n1 = (_hd2[_period / 2] - _ld2[_period / 2]) / (_period / 2)
+    _dim = _n1 > 0 and _n2 > 0 and _n3 > 0 ? (math.log(_n1 + _n2) - math.log(_n3)) / math.log(2) : 0
+    _alpha = math.exp(_coefficient * (_dim - 1))
+    _sc = _alpha < 0.01 ? 0.01 : _alpha > 1 ? 1 : _alpha
+    ta.cum(1) <= 2 * _period ? _src : _src * _sc + nz(_src[1]) * (1 - _sc)
+
+// calculate the moving average with the transferred settings
+_funcCalcMA(_type, _src, _timeframe, _period) =>
+    float ma = switch _type
+        "COVWMA" => _funcCOVWMA(_src, _period)
+        "DEMA" => _funcDEMA(_src, _period)
+        "EMA" => ta.ema(_src, _period)
+        "EHMA" => _funcEHMA(_src, _period)
+        "HMA" => ta.hma(_src, _period)
+        "KAMA" => _funcKAMA(_src, _period)
+        "SMA" => ta.sma(_src, _period)
+        "SMMA (RMA)" => ta.rma(_src, _period)
+        "TEMA" => _funcTEMA(_src, _period)
+        "FRAMA" => _funcFRAMA(_src, _period)
+        "VWMA" => ta.vwma(_src, _period)
+        "VIDYA" => _funcVIDYA(_src, _period)
+        "WMA" => ta.wma(_src, _period)
+        =>
+            float(na)
+    request.security(syminfo.tickerid, _timeframe, ma)
+
+
+//********** Templates: settings
+
+//----- EMA 20-50-100-200
+string tpl_type1_1_MaType = 'EMA'
+int tpl_type1_1_MaLength = 20
+string tpl_type1_2_MaType = 'EMA'
+int tpl_type1_2_MaLength = 50
+string tpl_type1_3_MaType = 'EMA'
+int tpl_type1_3_MaLength = 100
+string tpl_type1_4_MaType = 'EMA'
+int tpl_type1_4_MaLength = 200
+string tpl_type1_5_MaType = 'DISABLED'
+int tpl_type1_5_MaLength = 1
+string tpl_type1_6_MaType = 'DISABLED'
+int tpl_type1_6_MaLength = 1
+string tpl_type1_7_MaType = 'DISABLED'
+int tpl_type1_7_MaLength = 1
+string tpl_type1_8_MaType = 'DISABLED'
+int tpl_type1_8_MaLength = 1
+string tpl_type1_9_MaType = 'DISABLED'
+int tpl_type1_9_MaLength = 1
+string tpl_type1_10_MaType = 'DISABLED'
+int tpl_type1_10_MaLength = 1
+
+
+//----- SMA 5-10-20-50-200
+string tpl_type2_1_MaType = 'SMA'
+int tpl_type2_1_MaLength = 5
+string tpl_type2_2_MaType = 'SMA'
+int tpl_type2_2_MaLength = 10
+string tpl_type2_3_MaType = 'SMA'
+int tpl_type2_3_MaLength = 20
+string tpl_type2_4_MaType = 'SMA'
+int tpl_type2_4_MaLength = 50
+string tpl_type2_5_MaType = 'SMA'
+int tpl_type2_5_MaLength = 200
+string tpl_type2_6_MaType = 'DISABLED'
+int tpl_type2_6_MaLength = 1
+string tpl_type2_7_MaType = 'DISABLED'
+int tpl_type2_7_MaLength = 1
+string tpl_type2_8_MaType = 'DISABLED'
+int tpl_type2_8_MaLength = 1
+string tpl_type2_9_MaType = 'DISABLED'
+int tpl_type2_9_MaLength = 1
+string tpl_type2_10_MaType = 'DISABLED'
+int tpl_type2_10_MaLength = 1
+
+
+//----- EMA Fibonacci 21-55-89-144-233
+// Fibonacci Sequences
+// 0, 1, 1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144, 233, 377, 610
+string tpl_type3_1_MaType = 'EMA'
+int tpl_type3_1_MaLength = 21
+string tpl_type3_2_MaType = 'EMA'
+int tpl_type3_2_MaLength = 55
+string tpl_type3_3_MaType = 'EMA'
+int tpl_type3_3_MaLength = 89
+string tpl_type3_4_MaType = 'EMA'
+int tpl_type3_4_MaLength = 144
+string tpl_type3_5_MaType = 'EMA'
+int tpl_type3_5_MaLength = 233
+string tpl_type3_6_MaType = 'DISABLED'
+int tpl_type3_6_MaLength = 1
+string tpl_type3_7_MaType = 'DISABLED'
+int tpl_type3_7_MaLength = 1
+string tpl_type3_8_MaType = 'DISABLED'
+int tpl_type3_8_MaLength = 1
+string tpl_type3_9_MaType = 'DISABLED'
+int tpl_type3_9_MaLength = 1
+string tpl_type3_10_MaType = 'DISABLED'
+int tpl_type3_10_MaLength = 1
+
+
+//----- EMA 20-50-100-200 / SMA 100-200
+string tpl_type4_1_MaType = 'EMA'
+int tpl_type4_1_MaLength = 20
+string tpl_type4_2_MaType = 'EMA'
+int tpl_type4_2_MaLength = 50
+string tpl_type4_3_MaType = 'EMA'
+int tpl_type4_3_MaLength = 100
+string tpl_type4_4_MaType = 'EMA'
+int tpl_type4_4_MaLength = 200
+string tpl_type4_5_MaType = 'SMA'
+int tpl_type4_5_MaLength = 100
+string tpl_type4_6_MaType = 'SMA'
+int tpl_type4_6_MaLength = 100
+string tpl_type4_7_MaType = 'DISABLED'
+int tpl_type4_7_MaLength = 1
+string tpl_type4_8_MaType = 'DISABLED'
+int tpl_type4_8_MaLength = 1
+string tpl_type4_9_MaType = 'DISABLED'
+int tpl_type4_9_MaLength = 1
+string tpl_type4_10_MaType = 'DISABLED'
+int tpl_type4_10_MaLength = 1
+
+
+//----- EMA Golden/Death Cross 50-200
+string tpl_type5_1_MaType = 'EMA'
+int tpl_type5_1_MaLength = 50
+string tpl_type5_2_MaType = 'EMA'
+int tpl_type5_2_MaLength = 200
+string tpl_type5_3_MaType = 'DISABLED'
+int tpl_type5_3_MaLength = 1
+string tpl_type5_4_MaType = 'DISABLED'
+int tpl_type5_4_MaLength = 1
+string tpl_type5_5_MaType = 'DISABLED'
+int tpl_type5_5_MaLength = 1
+string tpl_type5_6_MaType = 'DISABLED'
+int tpl_type5_6_MaLength = 1
+string tpl_type5_7_MaType = 'DISABLED'
+int tpl_type5_7_MaLength = 1
+string tpl_type5_8_MaType = 'DISABLED'
+int tpl_type5_8_MaLength = 1
+string tpl_type5_9_MaType = 'DISABLED'
+int tpl_type5_9_MaLength = 1
+string tpl_type5_10_MaType = 'DISABLED'
+int tpl_type5_10_MaLength = 1
+
+
+//----- SMA Golden/Death Cross 50-200
+string tpl_type6_1_MaType = 'SMA'
+int tpl_type6_1_MaLength = 50
+string tpl_type6_2_MaType = 'SMA'
+int tpl_type6_2_MaLength = 200
+string tpl_type6_3_MaType = 'DISABLED'
+int tpl_type6_3_MaLength = 1
+string tpl_type6_4_MaType = 'DISABLED'
+int tpl_type6_4_MaLength = 1
+string tpl_type6_5_MaType = 'DISABLED'
+int tpl_type6_5_MaLength = 1
+string tpl_type6_6_MaType = 'DISABLED'
+int tpl_type6_6_MaLength = 1
+string tpl_type6_7_MaType = 'DISABLED'
+int tpl_type6_7_MaLength = 1
+string tpl_type6_8_MaType = 'DISABLED'
+int tpl_type6_8_MaLength = 1
+string tpl_type6_9_MaType = 'DISABLED'
+int tpl_type6_9_MaLength = 1
+string tpl_type6_10_MaType = 'DISABLED'
+int tpl_type6_10_MaLength = 1
+
+
+//----- HMA Cross 21-34
+string tpl_type7_1_MaType = 'HMA'
+int tpl_type7_1_MaLength = 21
+string tpl_type7_2_MaType = 'HMA'
+int tpl_type7_2_MaLength = 34
+string tpl_type7_3_MaType = 'DISABLED'
+int tpl_type7_3_MaLength = 1
+string tpl_type7_4_MaType = 'DISABLED'
+int tpl_type7_4_MaLength = 1
+string tpl_type7_5_MaType = 'DISABLED'
+int tpl_type7_5_MaLength = 1
+string tpl_type7_6_MaType = 'DISABLED'
+int tpl_type7_6_MaLength = 1
+string tpl_type7_7_MaType = 'DISABLED'
+int tpl_type7_7_MaLength = 1
+string tpl_type7_8_MaType = 'DISABLED'
+int tpl_type7_8_MaLength = 1
+string tpl_type7_9_MaType = 'DISABLED'
+int tpl_type7_9_MaLength = 1
+string tpl_type7_10_MaType = 'DISABLED'
+int tpl_type7_10_MaLength = 1
+
+ 
+//----- CSS Long Short Trading
+string tpl_type8_1_MaType = 'SMA'
+int tpl_type8_1_MaLength = 21
+string tpl_type8_2_MaType = 'SMA'
+int tpl_type8_2_MaLength = 50
+string tpl_type8_3_MaType = 'SMA'
+int tpl_type8_3_MaLength = 200
+string tpl_type8_4_MaType = 'EMA'
+int tpl_type8_4_MaLength = 50
+string tpl_type8_5_MaType = 'SMMA (RMA)'
+int tpl_type8_5_MaLength = 7
+string tpl_type8_6_MaType = 'SMMA (RMA)'
+int tpl_type8_6_MaLength = 9
+string tpl_type8_7_MaType = 'SMMA (RMA)'
+int tpl_type8_7_MaLength = 99
+string tpl_type8_8_MaType = 'SMA'
+int tpl_type8_8_MaLength = 9
+string tpl_type8_9_MaType = 'DISABLED'
+int tpl_type8_9_MaLength = 1
+string tpl_type8_10_MaType = 'DISABLED'
+int tpl_type8_10_MaLength = 1
+
+
+//********** Inputs
+
+// Global Settings
+string inputTemplate = input.string(title='Template', group='Settings', defval='DISABLED', options=['DISABLED', 'EMA 20-50-100-200', 'EMA Fibonacci 21-55-89-144-233', 'EMA 20-50-100-200 / SMA 100-200', 'EMA Golden/Death Cross 50-200', 'SMA Golden/Death Cross 50-200', 'SMA 5-10-20-50-200', 'HMA Cross 21-34','CSS Long Short Trading'])
+
+// Field 1
+input_1_Timeframe = input.timeframe("", "Resolution:", group="Field 1")
+input_1_Source = input(title='Source', group='Field 1', defval=close)
+string input_1_MaType = input.string(title='Type', group='Field 1', defval='EMA', options=['DISABLED', 'COVWMA', 'DEMA', 'EMA', 'EHMA', 'FRAMA', 'HMA', 'KAMA', 'SMA', 'SMMA (RMA)', 'TEMA', 'VIDYA', 'VWMA', 'WMA'])
+int input_1_MaLength = input.int(title='Length', group='Field 1', minval=1, maxval=1000, defval=20)
+color input_1_color = input(title='Style: Color', group='Field 1', defval=val_1_color_default)
+int input_1_LineWidth = input.int(title='Style: Size', group='Field 1', minval=1, maxval=4, defval=2, step=1)
+int input_1_LineTransparency = input.int(title='Style: Transparency', group='Field 1', minval=0, maxval=100, defval=0, step=5)
+string input_1_LineStyle = input.string(title='Style: Type', group='Field 1', defval='Line', options=['Line', 'Stepline', 'Step Line With Diamonds', 'Circles'])
+
+// Field 2
+input_2_Timeframe = input.timeframe("", "Resolution:", group="Field 2")
+input_2_Source = input(title='Source', group='Field 2', defval=close)
+string input_2_MaType = input.string(title='Type', group='Field 2', defval='EMA', options=['DISABLED', 'COVWMA', 'DEMA', 'EMA', 'EHMA', 'FRAMA', 'HMA', 'KAMA', 'SMA', 'SMMA (RMA)', 'TEMA', 'VIDYA', 'VWMA', 'WMA'])
+int input_2_MaLength = input.int(title='Length', group='Field 2', minval=1, maxval=1000, defval=50)
+color input_2_color = input(title='Style: Color', group='Field 2', defval=val_2_color_default)
+int input_2_LineWidth = input.int(title='Style: Size', group='Field 2', minval=1, maxval=4, defval=2, step=1)
+int input_2_LineTransparency = input.int(title='Style: Transparency', group='Field 2', minval=0, maxval=100, defval=0, step=5)
+string input_2_LineStyle = input.string(title='Style: Type', group='Field 2', defval='Line', options=['Line', 'Stepline', 'Step Line With Diamonds', 'Circles'])
+
+// Field 3
+input_3_Timeframe = input.timeframe("", "Resolution:", group="Field 3")
+input_3_Source = input(title='Source', group='Field 3', defval=close)
+string input_3_MaType = input.string(title='Type', group='Field 3', defval='EMA', options=['DISABLED', 'COVWMA', 'DEMA', 'EMA', 'EHMA', 'FRAMA', 'HMA', 'KAMA', 'SMA', 'SMMA (RMA)', 'TEMA', 'VIDYA', 'VWMA', 'WMA'])
+input_3_MaLength = input.int(title='Length', group='Field 3', minval=1, maxval=1000, defval=100)
+color input_3_color = input(title='Style: Color', group='Field 3', defval=val_3_color_default)
+int input_3_LineWidth = input.int(title='Style: Size', group='Field 3', minval=1, maxval=4, defval=2, step=1)
+int input_3_LineTransparency = input.int(title='Style: Transparency', group='Field 3', minval=0, maxval=100, defval=0, step=5)
+string input_3_LineStyle = input.string(title='Style: Type', group='Field 3', defval='Line', options=['Line', 'Stepline', 'Step Line With Diamonds', 'Circles'])
+
+// Field 4
+input_4_Timeframe = input.timeframe("", "Resolution:", group="Field 4")
+input_4_Source = input(title='Source', group='Field 4', defval=close)
+string input_4_MaType = input.string(title='Type', group='Field 4', defval='DISABLED', options=['DISABLED', 'COVWMA', 'DEMA', 'EMA', 'EHMA', 'FRAMA', 'HMA', 'KAMA', 'SMA', 'SMMA (RMA)', 'TEMA', 'VIDYA', 'VWMA', 'WMA'])
+int input_4_MaLength = input.int(title='Length', group='Field 4', minval=1, maxval=1000, defval=1)
+color input_4_color = input(title='Style: Color', group='Field 4', defval=val_4_color_default)
+int input_4_LineWidth = input.int(title='Style: Size', group='Field 4', minval=1, maxval=4, defval=2, step=1)
+int input_4_LineTransparency = input.int(title='Style: Transparency', group='Field 4', minval=0, maxval=100, defval=0, step=5)
+string input_4_LineStyle = input.string(title='Style: Type', group='Field 4', defval='Line', options=['Line', 'Stepline', 'Step Line With Diamonds', 'Circles'])
+
+// Field 5
+input_5_Timeframe = input.timeframe("", "Resolution:", group="Field 5")
+input_5_Source = input(title='Source', group='Field 5', defval=close)
+string input_5_MaType = input.string(title='Type', group='Field 5', defval='DISABLED', options=['DISABLED', 'COVWMA', 'DEMA', 'EMA', 'EHMA', 'FRAMA', 'HMA', 'KAMA', 'SMA', 'SMMA (RMA)', 'TEMA', 'VIDYA', 'VWMA', 'WMA'])
+int input_5_MaLength = input.int(title='Length', group='Field 5', minval=1, maxval=1000, defval=1)
+color input_5_color = input(title='Style: Color', group='Field 5', defval=val_5_color_default)
+int input_5_LineWidth = input.int(title='Style: Size', group='Field 5', minval=1, maxval=4, defval=2, step=1)
+int input_5_LineTransparency = input.int(title='Style: Transparency', group='Field 5', minval=0, maxval=100, defval=0, step=5)
+string input_5_LineStyle = input.string(title='Style: Type', group='Field 5', defval='Line', options=['Line', 'Stepline', 'Step Line With Diamonds', 'Circles'])
+
+// Field 6
+input_6_Timeframe = input.timeframe("", "Resolution:", group="Field 6")
+input_6_Source = input(title='Source', group='Field 6', defval=close)
+string input_6_MaType = input.string(title='Type', group='Field 6', defval='DISABLED', options=['DISABLED', 'COVWMA', 'DEMA', 'EMA', 'EHMA', 'FRAMA', 'HMA', 'KAMA', 'SMA', 'SMMA (RMA)', 'TEMA', 'VIDYA', 'VWMA', 'WMA'])
+int input_6_MaLength = input.int(title='xLength', group='Field 6', minval=1, maxval=1000, defval=1)
+color input_6_color = input(title='Style: Color', group='Field 6', defval=val_6_color_default)
+int input_6_LineWidth = input.int(title='Style: Size', group='Field 6', minval=1, maxval=4, defval=2, step=1)
+int input_6_LineTransparency = input.int(title='Style: Transparency', group='Field 6', minval=0, maxval=100, defval=0, step=5)
+string input_6_LineStyle = input.string(title='Style: Type', group='Field 6', defval='Line', options=['Line', 'Stepline', 'Step Line With Diamonds', 'Circles'])
+
+// Field 7
+input_7_Timeframe = input.timeframe("", "Resolution:", group="Field 7")
+input_7_Source = input(title='Source', group='Field 7', defval=close)
+string input_7_MaType = input.string(title='Type', group='Field 7', defval='DISABLED', options=['DISABLED', 'COVWMA', 'DEMA', 'EMA', 'EHMA', 'FRAMA', 'HMA', 'KAMA', 'SMA', 'SMMA (RMA)', 'TEMA', 'VIDYA', 'VWMA', 'WMA'])
+int input_7_MaLength = input.int(title='Length', group='Field 7', minval=1, maxval=1000, defval=1)
+color input_7_color = input(title='Style: Color', group='Field 7', defval=val_7_color_default)
+int input_7_LineWidth = input.int(title='Style: Size', group='Field 7', minval=1, maxval=4, defval=2, step=1)
+int input_7_LineTransparency = input.int(title='Style: Transparency', group='Field 7', minval=0, maxval=100, defval=0, step=5)
+string input_7_LineStyle = input.string(title='Style: Type', group='Field 7', defval='Line', options=['Line', 'Stepline', 'Step Line With Diamonds', 'Circles'])
+
+// Field 8
+input_8_Timeframe = input.timeframe("", "Resolution:", group="Field 8")
+input_8_Source = input(title='Source', group='Field 8', defval=close)
+string input_8_MaType = input.string(title='Type', group='Field 8', defval='DISABLED', options=['DISABLED', 'COVWMA', 'DEMA', 'EMA', 'EHMA', 'FRAMA', 'HMA', 'KAMA', 'SMA', 'SMMA (RMA)', 'TEMA', 'VIDYA', 'VWMA', 'WMA'])
+int input_8_MaLength = input.int(title='Length', group='Field 8', minval=1, maxval=1000, defval=1)
+color input_8_color = input(title='Style: Color', group='Field 8', defval=val_8_color_default)
+int input_8_LineWidth = input.int(title='Style: Size', group='Field 8', minval=1, maxval=4, defval=2, step=1)
+int input_8_LineTransparency = input.int(title='Style: Transparency', group='Field 8', minval=0, maxval=100, defval=0, step=5)
+string input_8_LineStyle = input.string(title='Style: Type', group='Field 8', defval='Line', options=['Line', 'Stepline', 'Step Line With Diamonds', 'Circles'])
+
+// Field 9
+input_9_Timeframe = input.timeframe("", "Resolution:", group="Field 9")
+input_9_Source = input(title='Source', group='Field 9', defval=close)
+string input_9_MaType = input.string(title='Type', group='Field 9', defval='DISABLED', options=['DISABLED', 'COVWMA', 'DEMA', 'EMA', 'EHMA', 'FRAMA', 'HMA', 'KAMA', 'SMA', 'SMMA (RMA)', 'TEMA', 'VIDYA', 'VWMA', 'WMA'])
+int input_9_MaLength = input.int(title='Length', group='Field 9', minval=1, maxval=1000, defval=1)
+color input_9_color = input(title='Style: Color', group='Field 9', defval=val_9_color_default)
+int input_9_LineWidth = input.int(title='Style: Size', group='Field 9', minval=1, maxval=4, defval=2, step=1)
+int input_9_LineTransparency = input.int(title='Style: Transparency', group='Field 9', minval=0, maxval=100, defval=0, step=5)
+string input_9_LineStyle = input.string(title='Style: Type', group='Field 9', defval='Line', options=['Line', 'Stepline', 'Step Line With Diamonds', 'Circles'])
+
+// Field 10
+input_10_Timeframe = input.timeframe("", "Resolution:", group="Field 10")
+input_10_Source = input(title='Source', group='Field 10', defval=close)
+string input_10_MaType = input.string(title='Type', group='Field 10', defval='DISABLED', options=['DISABLED', 'COVWMA', 'DEMA', 'EMA', 'EHMA', 'FRAMA', 'HMA', 'KAMA', 'SMA', 'SMMA (RMA)', 'TEMA', 'VIDYA', 'VWMA', 'WMA'])
+int input_10_MaLength = input.int(title='Length', group='Field 10', minval=1, maxval=1000, defval=1)
+color input_10_color = input(title='Style: Color', group='Field 10', defval=val_10_color_default)
+int input_10_LineWidth = input.int(title='Style: Size', group='Field 10', minval=1, maxval=4, defval=2, step=1)
+int input_10_LineTransparency = input.int(title='Style: Transparency', group='Field 10', minval=0, maxval=100, defval=0, step=5)
+string input_10_LineStyle = input.string(title='Style: Type', group='Field 10', defval='Line', options=['Line', 'Stepline', 'Step Line With Diamonds', 'Circles'])
+
+
+
+//************  set final settings
+[valFinal_1_MaType, valFinal_1_MaLength] = _funcSetFinalVal(inputTemplate, tpl_type1_1_MaType, tpl_type2_1_MaType, tpl_type3_1_MaType, tpl_type4_1_MaType, tpl_type5_1_MaType, tpl_type6_1_MaType, tpl_type7_1_MaType, tpl_type8_1_MaType, input_1_MaType, tpl_type1_1_MaLength, tpl_type2_1_MaLength, tpl_type3_1_MaLength, tpl_type4_1_MaLength, tpl_type5_1_MaLength, tpl_type6_1_MaLength, tpl_type7_1_MaLength, tpl_type8_1_MaLength, input_1_MaLength)
+[valFinal_2_MaType, valFinal_2_MaLength] = _funcSetFinalVal(inputTemplate, tpl_type1_2_MaType, tpl_type2_2_MaType, tpl_type3_2_MaType, tpl_type4_2_MaType, tpl_type5_2_MaType, tpl_type6_2_MaType, tpl_type7_2_MaType, tpl_type8_2_MaType, input_2_MaType, tpl_type1_2_MaLength, tpl_type2_2_MaLength, tpl_type3_2_MaLength, tpl_type4_2_MaLength, tpl_type5_2_MaLength, tpl_type6_2_MaLength, tpl_type7_2_MaLength, tpl_type8_2_MaLength, input_2_MaLength)
+[valFinal_3_MaType, valFinal_3_MaLength] = _funcSetFinalVal(inputTemplate, tpl_type1_3_MaType, tpl_type2_3_MaType, tpl_type3_3_MaType, tpl_type4_3_MaType, tpl_type5_3_MaType, tpl_type6_3_MaType, tpl_type7_3_MaType, tpl_type8_3_MaType, input_3_MaType, tpl_type1_3_MaLength, tpl_type2_3_MaLength, tpl_type3_3_MaLength, tpl_type4_3_MaLength, tpl_type5_3_MaLength, tpl_type6_3_MaLength, tpl_type7_3_MaLength, tpl_type8_3_MaLength, input_3_MaLength)
+[valFinal_4_MaType, valFinal_4_MaLength] = _funcSetFinalVal(inputTemplate, tpl_type1_4_MaType, tpl_type2_4_MaType, tpl_type3_4_MaType, tpl_type4_4_MaType, tpl_type5_4_MaType, tpl_type6_4_MaType, tpl_type7_4_MaType, tpl_type8_4_MaType, input_4_MaType, tpl_type1_4_MaLength, tpl_type2_4_MaLength, tpl_type3_4_MaLength, tpl_type4_4_MaLength, tpl_type5_4_MaLength, tpl_type6_4_MaLength, tpl_type7_4_MaLength, tpl_type8_4_MaLength, input_4_MaLength)
+[valFinal_5_MaType, valFinal_5_MaLength] = _funcSetFinalVal(inputTemplate, tpl_type1_5_MaType, tpl_type2_5_MaType, tpl_type3_5_MaType, tpl_type4_5_MaType, tpl_type5_5_MaType, tpl_type6_5_MaType, tpl_type7_5_MaType, tpl_type8_5_MaType, input_5_MaType, tpl_type1_5_MaLength, tpl_type2_5_MaLength, tpl_type3_5_MaLength, tpl_type4_5_MaLength, tpl_type5_5_MaLength, tpl_type6_5_MaLength, tpl_type7_5_MaLength, tpl_type8_5_MaLength, input_5_MaLength)
+[valFinal_6_MaType, valFinal_6_MaLength] = _funcSetFinalVal(inputTemplate, tpl_type1_6_MaType, tpl_type2_6_MaType, tpl_type3_6_MaType, tpl_type4_6_MaType, tpl_type5_6_MaType, tpl_type6_6_MaType, tpl_type7_6_MaType, tpl_type8_6_MaType, input_6_MaType, tpl_type1_6_MaLength, tpl_type2_6_MaLength, tpl_type3_6_MaLength, tpl_type4_6_MaLength, tpl_type5_6_MaLength, tpl_type6_6_MaLength, tpl_type7_6_MaLength, tpl_type8_6_MaLength, input_6_MaLength)
+[valFinal_7_MaType, valFinal_7_MaLength] = _funcSetFinalVal(inputTemplate, tpl_type1_7_MaType, tpl_type2_7_MaType, tpl_type3_7_MaType, tpl_type4_7_MaType, tpl_type5_7_MaType, tpl_type6_7_MaType, tpl_type7_7_MaType, tpl_type8_7_MaType, input_7_MaType, tpl_type1_7_MaLength, tpl_type2_7_MaLength, tpl_type3_7_MaLength, tpl_type4_7_MaLength, tpl_type5_7_MaLength, tpl_type6_7_MaLength, tpl_type7_7_MaLength, tpl_type8_7_MaLength, input_7_MaLength)
+[valFinal_8_MaType, valFinal_8_MaLength] = _funcSetFinalVal(inputTemplate, tpl_type1_8_MaType, tpl_type2_8_MaType, tpl_type3_8_MaType, tpl_type4_8_MaType, tpl_type5_8_MaType, tpl_type6_8_MaType, tpl_type7_8_MaType, tpl_type8_8_MaType, input_8_MaType, tpl_type1_8_MaLength, tpl_type2_8_MaLength, tpl_type3_8_MaLength, tpl_type4_8_MaLength, tpl_type5_8_MaLength, tpl_type6_8_MaLength, tpl_type7_8_MaLength, tpl_type8_8_MaLength, input_8_MaLength)
+[valFinal_9_MaType, valFinal_9_MaLength] = _funcSetFinalVal(inputTemplate, tpl_type1_9_MaType, tpl_type2_9_MaType, tpl_type3_9_MaType, tpl_type4_9_MaType, tpl_type5_9_MaType, tpl_type6_9_MaType, tpl_type7_9_MaType, tpl_type8_9_MaType, input_9_MaType, tpl_type1_9_MaLength, tpl_type2_9_MaLength, tpl_type3_9_MaLength, tpl_type4_9_MaLength, tpl_type5_9_MaLength, tpl_type6_9_MaLength, tpl_type7_9_MaLength, tpl_type8_9_MaLength, input_9_MaLength)
+[valFinal_10_MaType, valFinal_10_MaLength] = _funcSetFinalVal(inputTemplate, tpl_type1_10_MaType, tpl_type2_10_MaType, tpl_type3_10_MaType, tpl_type4_10_MaType, tpl_type5_10_MaType, tpl_type6_10_MaType, tpl_type7_10_MaType, tpl_type8_10_MaType, input_10_MaType, tpl_type1_10_MaLength, tpl_type2_10_MaLength, tpl_type3_10_MaLength, tpl_type4_10_MaLength, tpl_type5_10_MaLength, tpl_type6_10_MaLength, tpl_type7_10_MaLength, tpl_type8_10_MaLength, input_10_MaLength)
+
+
+
+//************  Plotting
+
+// Lines
+plot(_funcCalcMA(valFinal_1_MaType, input_1_Source, input_1_Timeframe, valFinal_1_MaLength), title='MA 1', color=color.new(input_1_color, input_1_LineTransparency), linewidth=input_1_LineWidth, style=_funcLineStyle(input_1_LineStyle))
+plot(_funcCalcMA(valFinal_2_MaType, input_2_Source, input_2_Timeframe, valFinal_2_MaLength), title='MA 2', color=color.new(input_2_color, input_2_LineTransparency), linewidth=input_2_LineWidth, style=_funcLineStyle(input_2_LineStyle))
+plot(_funcCalcMA(valFinal_3_MaType, input_3_Source, input_3_Timeframe, valFinal_3_MaLength), title='MA 3', color=color.new(input_3_color, input_3_LineTransparency), linewidth=input_3_LineWidth, style=_funcLineStyle(input_3_LineStyle))
+plot(_funcCalcMA(valFinal_4_MaType, input_4_Source, input_4_Timeframe, valFinal_4_MaLength), title='MA 4', color=color.new(input_4_color, input_4_LineTransparency), linewidth=input_4_LineWidth, style=_funcLineStyle(input_4_LineStyle))
+plot(_funcCalcMA(valFinal_5_MaType, input_5_Source, input_5_Timeframe, valFinal_5_MaLength), title='MA 5', color=color.new(input_5_color, input_5_LineTransparency), linewidth=input_5_LineWidth, style=_funcLineStyle(input_5_LineStyle))
+plot(_funcCalcMA(valFinal_6_MaType, input_6_Source, input_6_Timeframe, valFinal_6_MaLength), title='MA 6', color=color.new(input_6_color, input_6_LineTransparency), linewidth=input_6_LineWidth, style=_funcLineStyle(input_6_LineStyle))
+plot(_funcCalcMA(valFinal_7_MaType, input_7_Source, input_7_Timeframe, valFinal_7_MaLength), title='MA 7', color=color.new(input_7_color, input_7_LineTransparency), linewidth=input_7_LineWidth, style=_funcLineStyle(input_7_LineStyle))
+plot(_funcCalcMA(valFinal_8_MaType, input_8_Source, input_8_Timeframe, valFinal_8_MaLength), title='MA 8', color=color.new(input_8_color, input_8_LineTransparency), linewidth=input_8_LineWidth, style=_funcLineStyle(input_8_LineStyle))
+plot(_funcCalcMA(valFinal_9_MaType, input_9_Source, input_9_Timeframe, valFinal_9_MaLength), title='MA 9', color=color.new(input_9_color, input_9_LineTransparency), linewidth=input_9_LineWidth, style=_funcLineStyle(input_9_LineStyle))
+plot(_funcCalcMA(valFinal_10_MaType, input_10_Source, input_10_Timeframe, valFinal_10_MaLength), title='MA 10', color=color.new(input_10_color, input_10_LineTransparency), linewidth=input_10_LineWidth, style=_funcLineStyle(input_10_LineStyle))
