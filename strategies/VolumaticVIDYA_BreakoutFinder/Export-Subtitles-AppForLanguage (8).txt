@@ -1,0 +1,81 @@
+Time		Subtitle		Translation
+00:00:00				we have conducted a back test on a scalping strategy using these two free 
+00:00:03				byell indicators on trading View and here is the series of back tests we have 
+00:00:16				[Music] performed hello everyone welcome to the 
+00:00:22				Forex strategy Explorer Channel after conducting a brief back 
+00:00:26				test on this scalping strategy we found that the scalping strategy using this 
+00:00:30				breakout method has performed quite well out of 20 entries we made 12 order 
+00:00:36				positions hit the take profit Target while eight order positions hit the stop 
+00:00:41				loss by using a risk and reward ratio of 1 to2 this scalping strategy is still in 
+00:00:47				a fairly profitable stage for you to use in this example we applied this 
+00:00:53				scalping strategy to the euro USD pair using a 15-minute time 
+00:00:57				frame however besides being suitable for Forex scalping you can also use this 
+00:01:03				scalping strategy on other pairs such as gold crypto and more make sure to stay 
+00:01:09				in this video Until the End and don't forget to support this channel by liking 
+00:01:13				and subscribing so you don't miss out on other interesting information we will 
+00:01:17				share let's get started to use the scalping strategy with this breakout 
+00:01:22				method you can go to trading view then go to the indicator search tab 
+00:01:29				in the indicator search tab type volumatic variable index Dynamic 
+00:01:36				[Music] 
+00:01:43				average next simply select the volumatic variable index Dynamic average indicator 
+00:01:48				from Big Beluga after that adjust the settings 
+00:01:52				for the volumatic variable index Dynamic average 
+00:01:56				indicator in the input tab change the distance Factor value to 
+00:02:02				four then go to the style tab in the style tab uncheck the box for 
+00:02:12				labels once done simply click okay to confirm the 
+00:02:16				changes we will use the volumatic variable index Dynamic average indicator 
+00:02:21				as a trend guide in the market when a green arrow appears it signals a trend 
+00:02:26				reversal from bearish to bullish in this situation your main focus is to find the 
+00:02:32				best point to place a by order when a red arrow appears it signals a trend 
+00:02:37				reversal from bullish to bearish in this situation your main focus is to find the 
+00:02:43				best point to place a sell order now add the second indicator that 
+00:02:48				will be used in this scalping strategy go to the indicator search tab then type 
+00:02:54				breakout finder 
+00:02:58				[Music] 
+00:03:03				next simply select the breakout finder indicator from Lonesome the blue we will 
+00:03:08				use the breakout finder indicator to identify breakout opportunities in the 
+00:03:12				market when a bullish breakout occurs or the indicator shows a blue triangle it 
+00:03:18				is a Buy Signal when a bearish breakout occurs and the indicator shows a red 
+00:03:23				triangle it is a sell signal to make it clearer let's discuss how to place buy 
+00:03:29				and sell order using this scalping strategy how to place a cell order if 
+00:03:35				the volumatic variable index Dynamic average indicator shows a red triangle 
+00:03:40				it signals a trend reversal from bullish to bearish in this situation you should 
+00:03:45				only look for the best opportunity to place a sell 
+00:03:48				order wait for a bearish breakout which is indicated by the appearance of a red 
+00:03:53				triangle from the breakout finder indicator ensure that the formed 
+00:03:58				Candlestick is bearish if all conditions are met you can place 
+00:04:02				a sell order after the bearish Candlestick 
+00:04:10				closes set the stop loss at the previous High use a take-profit target with a 1 
+00:04:16				to2 risk and reward ratio [Music] 
+00:04:25				[Music] 
+00:04:48				[Music] 
+00:04:55				[Music] 
+00:05:10				how to place a cell order if the volumatic variable index Dynamic average 
+00:05:15				indicator shows a red triangle it signals a trend reversal from bullish to 
+00:05:20				bearish in this situation you should only look for the best opportunity to 
+00:05:24				place a sell order wait for a bearish breakout which 
+00:05:28				is indicated by the appearance of a red triangle from the breakout finder 
+00:05:33				indicator ensure that the formed Candlestick is 
+00:05:37				bearish if all conditions are met you can place a sell order after the bearish 
+00:05:41				Candlestick 
+00:05:50				closes set the stop loss at the previous High use a take-profit target with a 1 
+00:05:56				to2 risk and reward ratio 
+00:06:11				[Music] 
+00:06:19				[Music] how to place a by 
+00:06:26				order if the volumatic variable index dynamic average indicator shows a green 
+00:06:31				triangle it signals a trend reversal from bearish to bullish in this 
+00:06:36				situation you should only look for the best opportunity to place a buy order 
+00:06:41				wait for a bullish breakout which is indicated by the appearance of a blue 
+00:06:45				triangle from the breakout finder indicator ensure that the formed 
+00:06:49				Candlestick is bullish if all conditions are met you 
+00:06:54				can place a byy order after the bullish Candlestick closes 
+00:06:58				[Music] 
+00:07:05				set the stop loss at the previous low use a take-profit target with a 1 to2 
+00:07:11				risk and reward ratio 
+00:07:21				[Music] 
+00:07:38				[Music] 
+00:07:44				[Music] always maintain your money management 
+00:07:49				and trading psychology if possible you can conduct 
+00:07:53				your own back test first before using this trading strategy on other pairs 
+00:07:57				click like And subscribe if you enjoy this video that's all and see you in the 
+00:08:03				next video  

@@ -1,0 +1,641 @@
+//@version=5
+strategy(title='Box Scalper', overlay=true, initial_capital=10000, default_qty_type=strategy.cash, default_qty_value=10000, commission_type=strategy.commission.percent, commission_value=0.05, pyramiding=0, margin_long=0, margin_short=0)
+
+// ==========================================================================================
+// 策略名称：Box Scalper（箱体剥头皮策略）
+// 策略描述：基于SSL、QQE、ADX和Box指标的组合交易策略
+// 在 Box Scalper-Strategy-1.pine 的基础上，按照ai的建议，做了分批止盈的优化
+// ==========================================================================================
+//
+// 交易逻辑说明：
+//
+// 【做多开单条件】
+// 当前无持仓或持空，且允许做多（PS_Expect != 'SHORT'），且满足以下任一条件：
+// 条件1：
+//   - 收盘价 > SSL（SSL通道上方）
+//   - QQE上涨信号（QQE_up = true）
+//   - 不是强制下跌信号（not qqe_was_force_dn）
+//   - (不是周末（week != 7 and week != 1）或 ADX > 趋势阈值（ADX_Trend）)
+// 条件2：
+//   - 收盘价 > SSL
+//   - k线上穿Box下轨
+//
+// 【做多止损】
+// - 固定止损：开仓价格的 (100 - TSL_SL2)%，即开仓价 * (100 - TSL_SL2) / 100
+// - 通过 strategy.exit 设置，止损订单自动执行
+//
+// 【做多止盈】
+// - 止盈目标价格：开仓价格 * (1 + TP_Ts2/100)
+// - 趋势止盈：当价格 > 止盈目标价 且 收盘价下穿最近20个周期内最高枢轴点的99%时，全部平仓
+// - 保护性止盈：当价格 > 止盈目标价 且 收盘价下穿止盈目标价时，全部平仓
+//
+// 【做空开单条件】
+// 当前无持仓或持多，且允许做空（PS_Expect != 'LONG'），且满足以下任一条件：
+// 条件1：
+//   - 收盘价 < SSL（SSL通道下方）
+//   - QQE下跌信号（QQE_dn = true）
+//   - 不是强制上涨信号（not qqe_was_force_up）
+//   - (不是周末（week != 7 and week != 1）或 ADX > 趋势阈值（ADX_Trend）)
+// 条件2：
+//   - 收盘价 < SSL
+//   - k线下穿Box上轨
+//
+// 【做空止损】
+// - 固定止损：开仓价格的 (100 + TSL_SL2)%，即开仓价 * (100 + TSL_SL2) / 100
+// - 通过 strategy.exit 设置，止损订单自动执行
+//
+// 【做空止盈】
+// - 止盈目标价格：开仓价格 * (1 - TP_Ts2/100)
+// - 趋势止盈：当价格 < 止盈目标价 且 收盘价下穿最近20个周期内最低枢轴点的99%时，全部平仓
+//   （注意：代码中使用 crossunder，但空单止盈逻辑上应该是价格上穿，可能存在逻辑问题）
+// - 保护性止盈：当价格 < 止盈目标价 且 收盘价下穿止盈目标价时，全部平仓
+//   （注意：代码中使用 crossunder，但空单止盈逻辑上应该是价格上穿，可能存在逻辑问题）
+//
+// 【反向信号平仓】
+// - 如果持有多单且设置为仅做多（PS_Expect == 'LONG'），当出现做空信号（BEAR）时平仓
+// - 如果持有空单且设置为仅做空（PS_Expect == 'SHORT'），当出现做多信号（BULL）时平仓
+//
+// 【多种仓位管理模式】
+// - 1. 默认仓位管理模式：单笔仓位大小为initial_capital的100%(100可配置为其他值)
+// - 2. 开启滚动仓位模式，首次仓位大小为initial_capital的10%，后续仓位为Math.max(initial_capital*100%, strategy.equity*100%)(计算方式帮我写成函数，100可配置为其他值）
+// - 3. 开启等差马丁仓位模式，默认单笔仓位大小为initial_capital的100%，每失败一次按照等差马丁仓位模式计算单笔仓位大小，直到盈利一次后按照默认仓位管理模式计算单笔仓位大小，如：初始为initial_capital*100%，失败一次后为initial_capital*101%，失败两次为initial_capital*102%，直到盈利一次后恢复为initial_capital*100%，以此类推，但是不超超过最大值initial_capital的1000%（计算方式帮我写成函数，100%和每次增加的百分比可配置为其他值，最大值可配置为其他值）
+// - 4. 开启以损定仓模式，单笔持仓风险按照initial_capital或当前总资金百分比计算
+
+
+
+fn_zigzag(_momentum_direction) =>
+    zz_goingup = _momentum_direction == 1
+    zz_goingdown = _momentum_direction == -1
+    zz_peak = float(na)
+    zz_bottom = float(na)
+    zz_peak := high > zz_peak[1] and zz_goingup or zz_goingdown[1] ? high : nz(zz_peak[1])
+    zz_bottom := low < zz_bottom[1] and zz_goingdown or zz_goingup[1] ? low : nz(zz_bottom[1])
+    zigzag = zz_goingup and zz_goingdown[1] ? zz_bottom[1] : zz_goingup[1] and zz_goingdown ? zz_peak[1] : na
+    zigzag
+
+// RSI 函数：计算多时间框架相对强弱指标
+// 参数：src - 数据源，len - RSI长度，mtf - 多时间框架倍数
+fn_rsi(src, len, mtf)=>
+    change = src - src[mtf]                    // 计算当前值与mtf周期前的差值
+
+    up = math.max(change, 0)                   // 上涨幅度（只取正值）
+    dn =-math.min(change, 0)                   // 下跌幅度（只取正值，取负号转为正）
+
+    up_change = ta.rma(up, (len * mtf))        // 上涨幅度的RMA（递归移动平均）
+    dn_change = ta.rma(dn, (len * mtf))        // 下跌幅度的RMA
+
+    // 计算RSI：RSI = 100 - (100 / (1 + RS))，其中RS = 平均上涨 / 平均下跌
+    rsi = dn_change == 0 ? 100 : up_change == 0 ? 0 : 100 - (100 / (1 + up_change / dn_change))
+
+// QQE 函数：Quantitative Qualitative Estimation（定量定性估计）指标
+// 默认参数：14, 5, 8, 4.3
+// 参数：len - RSI长度，mtf - 多时间框架倍数，smooth - 平滑周期，mult - 倍数
+fn_qqe(len, mtf, smooth, mult)=>
+    wilders = len * 2 - 1                      // Wilder's 平滑周期
+
+    // 上涨方向的计算
+    up = 0.0                                    // 上涨信号线
+    up_rsi = fn_rsi(low, len, mtf)              // 基于低点的RSI
+    up_ema = ta.ema(up_rsi, smooth)             // RSI的EMA平滑
+    up_atr = math.abs(up_ema[1] - up_ema)       // EMA的变化幅度（ATR）
+    up_diff = ta.ema(ta.ema(up_atr, wilders), wilders) * mult  // 双重EMA平滑后的差值乘以倍数
+    up_ma = up_ema - up_diff                    // 上涨信号线的基础值
+    // 如果EMA持续上升，则取最大值；否则使用基础值
+    up := up_ema[1] > up[1] and up_ema > up[1] ? math.max(up_ma, up[1]) : up_ma
+
+    // 下跌方向的计算
+    dn = 0.0                                    // 下跌信号线
+    dn_rsi = fn_rsi(high, len, mtf)             // 基于高点的RSI
+    dn_ema = ta.ema(dn_rsi, smooth)             // RSI的EMA平滑
+    dn_atr = math.abs(dn_ema[1] - dn_ema)       // EMA的变化幅度（ATR）
+    dn_diff = ta.ema(ta.ema(dn_atr, wilders), wilders) * mult  // 双重EMA平滑后的差值乘以倍数
+    dn_ma = dn_ema + dn_diff                    // 下跌信号线的基础值
+    // 如果EMA持续下降，则取最小值；否则使用基础值
+    dn := dn_ema[1] < dn[1] and dn_ema < dn[1] ? math.min(dn_ma, dn[1]) : dn_ma
+
+    // 检测QQE信号：当下跌EMA上穿下跌信号线时产生上涨信号，当上涨EMA下穿上涨信号线时产生下跌信号
+    qqe_up = dn_ema > dn[1] and dn_ema[1] <= dn[2]  // 上涨信号：下跌EMA上穿下跌信号线
+    qqe_dn = up_ema < up[1] and up_ema[1] >= up[2]  // 下跌信号：上涨EMA下穿上涨信号线
+    [qqe_up, qqe_dn]
+
+// ADX 函数：Average Directional Index（平均趋向指标），用于衡量趋势强度
+// 参数：len - 计算周期，smooth - 平滑周期
+// 返回：[+DI（正向指标）, -DI（负向指标）, ADX（趋势强度）]
+fn_adx(len, smooth) =>
+    up      = ta.change(high)                   // 高点的变化
+    dn      = -ta.change(low)                   // 低点的变化（取负号）
+    pdm     = na(up) ? na : up > dn and up > 0 ? up : 0    // 正向方向移动（+DM）
+    mdm     = na(dn) ? na : dn > up and dn > 0 ? dn : 0    // 负向方向移动（-DM）
+    atr     = ta.atr(len)                       // 平均真实波幅
+    plus    = fixnan(100 * ta.rma(pdm, len) / atr)         // +DI：正向指标
+    minus   = fixnan(100 * ta.rma(mdm, len) / atr)         // -DI：负向指标
+    sum     = plus + minus                      // DI之和
+    // ADX：趋势强度 = 100 * RMA(|+DI - -DI| / (|+DI + -DI|))
+    adx     = 100 * ta.rma(math.abs(plus - minus) / (sum == 0 ? 1 : sum), smooth)
+    [plus, minus, adx]
+
+// COVWMA 函数：协方差加权移动平均（未在策略中使用）
+fn_covwma(a, b) =>
+    cov   = ta.stdev(a, b)/ta.sma(a, b)         // 协方差
+    cw    = a*cov                                // 加权值
+    covwma = math.sum(cw, b)/math.sum(cov, b)   // 协方差加权移动平均
+    covwma
+
+// SSL 函数：SSL（SSL Channel）指标，用于判断趋势方向
+// 参数：length - 计算周期
+fn_ssl(length) =>
+    hh = ta.hma(high, length)                   // 高点的HMA（Hull移动平均）
+    ll = ta.hma(low, length)                     // 低点的HMA
+
+    hlv = int(na)                                // 趋势方向（1=上涨，-1=下跌）
+    // 判断趋势：收盘价高于高点的HMA为上涨，低于低点的HMA为下跌，否则保持上一根K线的方向
+    hlv := close > hh ? 1 : close < ll ? -1 : hlv[1]
+    // SSL线：下跌趋势时显示高点的HMA，上涨趋势时显示低点的HMA
+    ssl = hlv < 0 ? hh : ll
+    ssl
+
+// =================================================================================================
+
+
+ADX_Group       = 'ADX'
+ADX_Length      = input.int(14,             title='Length',         group=ADX_Group,        minval=1,       step=1)
+ADX_Smooth      = input.int(14,             title='Smooth',         group=ADX_Group,        minval=1,       step=1)
+ADX_Range       = input.float(25,           title='Range',          group=ADX_Group,        minval=1,       step=1)
+ADX_Trend       = input.float(50,           title='Trend',          group=ADX_Group,        minval=1,       step=1)
+
+[ADX_plus, ADX_minus, ADX] = fn_adx(ADX_Length, ADX_Smooth)
+
+// =================================================================================================
+
+SSL_Group       = 'SSL'
+SSL_Length      = input.int(55,             title='Length',         group=SSL_Group,        minval=1,       step=10)
+
+SSL = fn_ssl(SSL_Length)
+
+SSL_color = close > SSL ? #00c3ff : close < SSL ? #ff0062 : na
+plot(SSL, title='SSL', linewidth=3, color=SSL_color)
+
+// =================================================================================================
+
+BOX_Group       = 'Squeeze Box'
+BOX_Period      = input.int(24,             title='Periods',        group=BOX_Group,        minval=1,       step=1)
+BOX_Deviation   = input.int(3,              title='Deviation',      group=BOX_Group,        minval=1,       step=1)
+BOX_Threshold   = input.int(50,             title='Threshold',      group=BOX_Group,        minval=1,       step=1)
+
+// Box 计算
+BOX_src = hlc3
+BOX_ma = fn_covwma(BOX_src, BOX_Period)
+BOX_bu = BOX_ma + ta.stdev(BOX_src, BOX_Period) * BOX_Deviation
+BOX_bd = BOX_ma - ta.stdev(BOX_src, BOX_Period) * BOX_Deviation
+
+// bandwidth
+BOX_bw = BOX_bu - BOX_bd
+
+// ========================= 挤压百分比计算 =========================
+BOX_buh = ta.highest(BOX_bu, BOX_Period)
+BOX_bdl = ta.lowest(BOX_bd, BOX_Period)
+BOX_rng = BOX_buh - BOX_bdl
+BOX_sqp = 100 * BOX_bw / BOX_rng
+
+// ========================= 挤压箱体逻辑 =========================
+BOX_sqz = (BOX_sqp < BOX_Threshold) ? 1 : 0
+BOX_hh = ta.highest(BOX_src, BOX_Period)
+BOX_boxh = BOX_sqz ? BOX_hh : BOX_src
+BOX_ll = ta.lowest(BOX_src, BOX_Period)
+BOX_boxl = BOX_sqz ? BOX_ll : BOX_src
+BOX_bh = ta.valuewhen(BOX_sqz, BOX_boxh, 1)
+BOX_bl = ta.valuewhen(BOX_sqz, BOX_boxl, 1)
+
+// ========================= 颜色和绘图 =========================
+boxcolor = BOX_src > BOX_bh ? color.lime : BOX_src < BOX_bl ? color.red : color.orange
+bhcolor = BOX_sqz ? boxcolor : na
+blcolor = BOX_sqz ? boxcolor : na
+
+bhplot = plot(BOX_bh, color=color.new(boxcolor, 50), title="Box High Level")
+blplot = plot(BOX_bl, color=color.new(boxcolor, 50), title="Box Low Level")
+fill(bhplot, blplot, color=color.new(boxcolor, 87), title="Box Fill")
+
+// =================================================================================================
+
+QQE_Group       = 'QQE'
+QQE_Length      = input.int(14,             title='RSI Length',     group=QQE_Group,        minval=1,       step=1)
+QQE_Mtf         = input.int(5,              title='MTF Mult',       group=QQE_Group,        minval=1,       step=1)
+QQE_Smooth      = input.int(8,              title='RSI Smooth',     group=QQE_Group,        minval=1,       step=1)
+QQE_Mult        = input.float(4.3,          title='QQE Mult',       group=QQE_Group,        minval=1,       step=0.1)
+
+[QQE_up, QQE_dn] = fn_qqe(QQE_Length, QQE_Mtf, QQE_Smooth, QQE_Mult)
+
+QQE_direction = 0
+QQE_direction := QQE_up ? 1 : QQE_dn ? -1 : nz(QQE_direction[1])
+
+// =================================================================================================
+
+
+ZON_Group       = 'QQE ZONE'
+ZON_Length      = input.int(5,              title='Length',         group=ZON_Group,        minval=1,       step=1)
+ZON_Upper       = input.float(75,           title='Upper',          group=ZON_Group,        minval=0,       step=1)
+ZON_Lower       = input.float(22,           title='Lower',          group=ZON_Group,        minval=0,       step=1)
+
+qqe_rsi = ta.rsi(close, ZON_Length)
+barssince_qqe_up = ta.barssince(QQE_up)
+barssince_qqe_dn = ta.barssince(QQE_dn)
+
+barssince_rsi_up = ta.barssince(qqe_rsi > ZON_Upper)
+barssince_rsi_dn = ta.barssince(qqe_rsi < ZON_Lower)
+qqe_was_force_up = QQE_dn and barssince_qqe_up[1] >= barssince_rsi_up[1]
+qqe_was_force_dn = QQE_up and barssince_qqe_dn[1] >= barssince_rsi_dn[1]
+zzcolor = qqe_was_force_up ? color.lime : qqe_was_force_dn ? color.red : color.black
+
+ZigZag = fn_zigzag(QQE_direction)
+plot(ZigZag, linewidth=2, color=zzcolor, title='ZigZag', style=plot.style_line)
+
+// =================================================================================================
+
+
+var float zz_top = high
+var float zz_bot = low
+
+pl = ta.valuewhen(QQE_up, ZigZag, 0)
+ph = ta.valuewhen(QQE_dn, ZigZag, 0)
+if QQE_dn
+    zz_top := nz(high > ph ? high : ph, zz_top[1])
+if QQE_up
+    zz_bot := nz(low < pl ? low : pl, zz_bot[1])
+
+plot(zz_top, color=color.aqua, style=plot.style_cross, title='Resistance')
+plot(zz_bot, color=color.yellow, style=plot.style_cross, title='Support')
+
+// =================================================================================================
+
+
+PS_Group        = 'POSITION'
+PS_Expect       = input.string('BOTH',      title='Expect',         group=PS_Group,         options=['BOTH','LONG', 'SHORT'])
+PS_Mode         = input.string('Capital',   title='Mode',           group=PS_Group,         options=['Capital', 'Equity'])
+PS_Initial      = input.int(100,            title='Initial(%)',     group=PS_Group,         minval=1,       maxval=1000, tooltip='默认仓位管理模式下的仓位百分比')
+
+// 仓位管理模式
+PS_SizingMode   = input.string('Default',    title='仓位管理模式',   group=PS_Group,         options=['Default', 'Rolling', 'Martingale', 'RiskBased'], tooltip='Default: 默认模式\nRolling: 滚动仓位模式\nMartingale: 等差马丁模式\nRiskBased: 以损定仓模式')
+
+// 默认仓位模式参数（已通过PS_Initial配置）
+
+// 滚动仓位模式参数
+PS_RollingFirstPercent = input.float(10,   title='滚动首次仓位(%)',   group=PS_Group,        minval=1,       maxval=1000, step=1, tooltip='滚动仓位模式下首次交易的仓位百分比')
+PS_RollingPercent = input.float(100,       title='滚动后续仓位(%)',   group=PS_Group,        minval=1,       maxval=1000, step=1, tooltip='滚动仓位模式下后续交易的仓位百分比')
+
+// 等差马丁模式参数
+PS_MartingaleInitial = input.float(100.0,  title='马丁初始仓位(%)',   group=PS_Group,        minval=0.1,     maxval=1000, step=0.1, tooltip='等差马丁模式的初始仓位百分比')
+PS_MartingaleStep   = input.float(1.0,     title='马丁每次增加(%)',   group=PS_Group,        minval=0.1,     maxval=100, step=0.1, tooltip='每次失败后增加的仓位百分比')
+PS_MartingaleMax    = input.float(1000.0,  title='马丁最大仓位(%)',   group=PS_Group,        minval=1,       maxval=1000, step=0.1, tooltip='等差马丁模式的最大仓位百分比')
+
+// 以损定仓模式参数
+PS_RiskPercent      = input.float(2.0,     title='单笔风险百分比(%)', group=PS_Group,        minval=0.1,     maxval=100, step=0.1, tooltip='以损定仓模式下单笔允许亏损占账户权益的百分比')
+PS_RiskMode         = input.string('Equity', title='风险计算基准',     group=PS_Group,         options=['Capital', 'Equity'], tooltip='以损定仓模式下使用初始资金还是当前权益计算风险')
+
+// =================================================================================================
+
+TSL_Group       = 'Stop Loss'
+TSL_SL2         = input.float(9.9,          title='Stop Loss Max(%)',   group=TSL_Group,    minval=0,       step=0.1)
+
+// =================================================================================================
+
+TP_Group        = 'Take Profit'
+TP_Ts2          = input.float(1.0,          title='Profit Target 2(%)', group=TP_Group,     minval=0,       step=0.1)
+
+// 移动止损参数
+TP_EnableTrailing = input.bool(true,        title='启用移动止损',       group=TP_Group,     tooltip='达到止盈目标后激活移动止损')
+TP_TrailingPercent = input.float(0.5,      title='移动止损百分比(%)',   group=TP_Group,     minval=0.1,     maxval=10, step=0.1, tooltip='移动止损距离当前价格的百分比')
+TP_TrailingActivation = input.float(1.0,   title='激活移动止损利润(%)', group=TP_Group,     minval=0.1,     maxval=10, step=0.1, tooltip='达到此利润百分比后激活移动止损')
+
+// 分批止盈参数
+TP_EnablePartial = input.bool(false,       title='启用分批止盈',        group=TP_Group,     tooltip='启用分批止盈功能')
+TP_Partial1Percent = input.float(0.5,      title='第一批止盈比例(%)',   group=TP_Group,     minval=0.1,     maxval=5, step=0.1, tooltip='第一批止盈目标利润百分比')
+TP_Partial1Qty = input.float(50,           title='第一批止盈仓位(%)',   group=TP_Group,     minval=10,      maxval=90, step=5, tooltip='第一批止盈的仓位百分比')
+TP_Partial2Percent = input.float(1.0,      title='第二批止盈比例(%)',   group=TP_Group,     minval=0.1,     maxval=5, step=0.1, tooltip='第二批止盈目标利润百分比')
+TP_Partial2Qty = input.float(30,           title='第二批止盈仓位(%)',   group=TP_Group,     minval=10,      maxval=90, step=5, tooltip='第二批止盈的仓位百分比')
+
+// QQE反向信号止盈参数
+TP_EnableQQE = input.bool(true,            title='启用QQE反向信号止盈', group=TP_Group,     tooltip='当QQE出现反向信号时止盈')
+
+PIP_ts2         = close * TP_Ts2 / syminfo.mintick / 100  // 止盈目标点数（未使用）
+
+TICKER = syminfo.prefix + ':' + syminfo.ticker  // 交易对标识符，用于生成交易消息
+
+// ========================= 仓位管理函数 =========================
+
+// 1. 默认仓位管理模式：单笔仓位大小为initial_capital的百分比（可配置）
+calcDefaultQty(entryPrice) =>
+    baseCapital = PS_Mode == 'Capital' ? strategy.initial_capital : strategy.equity
+    qty = baseCapital / entryPrice * (PS_Initial / 100)
+    qty
+
+// 2. 滚动仓位模式：首次仓位大小为initial_capital的10%，后续仓位为Math.max(initial_capital*100%, strategy.equity*100%)
+var bool isFirstTrade = true  // 标记是否是首次交易
+
+calcRollingQty(entryPrice) =>
+    if isFirstTrade
+        // 首次交易：使用初始资金的首次百分比
+        qty = strategy.initial_capital / entryPrice * (PS_RollingFirstPercent / 100)
+        qty
+    else
+        // 后续交易：取初始资金和当前权益的最大值（使用后续百分比）
+        initialQty = strategy.initial_capital / entryPrice * (PS_RollingPercent / 100)
+        equityQty = strategy.equity / entryPrice * (PS_RollingPercent / 100)
+        math.max(initialQty, equityQty)
+
+// 3. 等差马丁仓位模式：初始为initial_capital*初始百分比，每失败一次增加步长，直到盈利后恢复，但不超过最大百分比
+var int martingaleLossCount = 0  // 连续失败次数
+
+calcMartingaleQty(entryPrice) =>
+    // 计算当前应该使用的仓位百分比
+    currentPercent = PS_MartingaleInitial + (martingaleLossCount * PS_MartingaleStep)
+    // 限制不超过最大百分比
+    currentPercent := math.min(currentPercent, PS_MartingaleMax)
+    // 计算仓位数量
+    qty = strategy.initial_capital / entryPrice * (currentPercent / 100)
+    qty
+
+// 注意：martingaleLossCount 的更新必须在函数外部进行，不能在函数内修改全局 var 变量
+
+// 4. 以损定仓模式：根据止损距离和风险百分比计算仓位大小
+calcRiskBasedQty(entryPrice, stopPrice) =>
+    // 解方程式：(math.abs(开单价格 - 止损价格) / 止损价格) * (开单仓位的数量 * 开单价格) = 单笔风险
+    // 得出：开单仓位的数量 = 单笔风险 * 止损价格 / (开单价格 * math.abs(开单价格 - 止损价格))
+    baseCapital = PS_RiskMode == 'Capital' ? strategy.initial_capital : strategy.equity
+    usableCapital = math.max(strategy.initial_capital, baseCapital)
+    stopDistance = math.abs(entryPrice - stopPrice)
+    if stopDistance <= 0 or entryPrice <= 0 or stopPrice <= 0 or usableCapital <= 0
+        na
+    else
+        riskAmount = usableCapital * (PS_RiskPercent / 100)
+        // 根据方程式计算仓位数量
+        qty = (riskAmount * stopPrice) / (entryPrice * stopDistance)
+        // 限制最大仓位不超过可用资金
+        maxQtyByCapital = usableCapital / entryPrice
+        math.min(qty, maxQtyByCapital)
+
+// ========================= 交易状态跟踪 =========================
+
+// 跟踪上一笔交易的盈亏状态（用于马丁模式）
+var float lastEntryPrice = na
+var float lastStopLoss = na
+
+// 跟踪初始仓位大小（用于分批止盈）
+var float initialPositionSize = na
+var bool partial1Closed = false  // 第一批是否已止盈
+var bool partial2Closed = false  // 第二批是否已止盈
+
+// 检测订单是否已平仓
+bool longWasOpen = strategy.position_size[1] > 0 and strategy.position_size == 0
+bool shortWasOpen = strategy.position_size[1] < 0 and strategy.position_size == 0
+
+// 当订单平仓时，更新马丁模式的失败次数和重置分批止盈状态
+// 使用strategy.closedtrades来获取上一笔交易的盈亏信息
+if longWasOpen or shortWasOpen
+    // 获取最近一笔已平仓的交易
+    if strategy.closedtrades > 0
+        // 获取最后一笔交易的盈亏
+        lastTradeProfit = strategy.closedtrades.profit(strategy.closedtrades - 1)
+        // 如果盈利 > 0，则为盈利；否则为亏损
+        isProfit = lastTradeProfit > 0
+        // 直接更新马丁模式的失败次数（必须在函数外部）
+        if isProfit
+            // 盈利后重置失败次数
+            martingaleLossCount := 0
+        else
+            // 失败后增加失败次数
+            martingaleLossCount += 1
+    // 清除记录和重置分批止盈状态
+    lastEntryPrice := na
+    lastStopLoss := na
+    initialPositionSize := na
+    partial1Closed := false
+    partial2Closed := false
+
+// ========================= 交易信号生成 =========================
+
+week = dayofweek  // 当前是星期几（1=周一，7=周日）
+
+// 做多信号（BULL）：
+// 条件1：收盘价 > SSL 且 QQE上涨 且 不是强制下跌信号 且 (不是周末 或 ADX > 趋势阈值)
+// 条件2：收盘价 > SSL 且 收盘价上穿Box下轨
+BULL = (close > SSL and QQE_up and not qqe_was_force_dn and (week != 7 and week != 1 or ADX > ADX_Trend)) or (close > SSL and ta.crossover(close, BOX_bl))
+
+// 做空信号（BEAR）：
+// 条件1：收盘价 < SSL 且 QQE下跌 且 不是强制上涨信号 且 (不是周末 或 ADX > 趋势阈值)
+// 条件2：收盘价 < SSL 且 收盘价下穿Box上轨
+BEAR = (close < SSL and QQE_dn and not qqe_was_force_up and (week != 7 and week != 1 or ADX > ADX_Trend)) or (close < SSL and ta.crossunder(close, BOX_bh))
+
+// ========================= 持仓信息计算 =========================
+
+sign = strategy.position_size > 0 ? 1 : strategy.position_size < 0 ? -1 : na  // 持仓方向：1=多，-1=空
+ROE = sign * (close - strategy.position_avg_price) / strategy.position_avg_price * 100  // 收益率（Return on Equity）
+
+// ========================= 反向信号平仓 =========================
+
+// 如果持有多单且设置为仅做多，当出现做空信号时平仓
+if strategy.position_size > 0 and PS_Expect == 'LONG' and BEAR
+    SIZE = str.tostring(math.abs(strategy.position_size))
+    cl_msg = '{"symbol":"'+TICKER+'","action":"CLOSE","side":"LONG","size":' + SIZE + ',"comment":"CL-L"}'
+    strategy.close('LONG', comment='CL-L', alert_message=cl_msg)
+
+// 如果持有空单且设置为仅做空，当出现做多信号时平仓
+if strategy.position_size < 0 and PS_Expect == 'SHORT' and BULL
+    SIZE = str.tostring(math.abs(strategy.position_size))
+    cl_msg = '{"symbol":"'+TICKER+'","action":"CLOSE","side":"SHORT","size":' + SIZE + ',"comment":"CL-S"}'
+    strategy.close('SHORT', comment='CL-S', alert_message=cl_msg)
+
+
+// ========================= 止盈条件计算 =========================
+
+pivotsizing = 20  // 枢轴点计算周期
+pivotLookup = 1   // 枢轴点查找范围
+
+// 多单止盈条件
+L_TP = strategy.position_avg_price * (1 + TP_Ts2/100)  // 多单止盈价格
+hih     = ta.pivothigh(high, pivotLookup, pivotLookup)   // 枢轴高点
+top     = ta.valuewhen(hih, high[pivotLookup], 0)       // 获取枢轴高点值
+float highest = ta.highest(top,pivotsizing)              // 最近pivotsizing个周期内的最高枢轴点
+moveHigh = ta.crossunder(close,highest*0.99)            // 收盘价下穿最高点的99%（趋势反转信号）
+L_reversal = ta.crossunder(close,L_TP)                  // 收盘价下穿止盈价格（保护性止盈）
+
+// 空单止盈条件
+S_TP = strategy.position_avg_price * (1 - TP_Ts2/100)   // 空单止盈价格
+bot     = ta.pivotlow(low, pivotLookup, pivotLookup)     // 枢轴低点
+bottom  = ta.valuewhen(bot, low[pivotLookup], 0)        // 获取枢轴低点值
+float bottomst = ta.lowest(bottom,pivotsizing)          // 最近pivotsizing个周期内的最低枢轴点
+moveBottom = ta.crossunder(close,bottomst*0.99)         // 收盘价下穿最低点的99%（趋势反转信号，注意：空单应该是上穿,但测试发现下穿效果比较好）
+S_reversal = ta.crossunder(close,S_TP)                  // 收盘价下穿止盈价格（保护性止盈，注意：空单应该是上穿,但测试发现下穿效果比较好）
+
+// ========================= 做多入场逻辑 =========================
+
+// 入场条件：无持仓或持空 且 允许做多 且 出现做多信号
+if strategy.position_size <= 0 and PS_Expect != 'SHORT' and BULL
+    entryPrice = close
+    // 计算止损价格
+    stopLossPrice = entryPrice * (100 - TSL_SL2) / 100
+    
+    // 根据仓位管理模式计算仓位大小
+    float size = na
+    if PS_SizingMode == 'Default'
+        size := calcDefaultQty(entryPrice)
+    else if PS_SizingMode == 'Rolling'
+        size := calcRollingQty(entryPrice)
+        // 首次交易后，更新isFirstTrade标志
+        if isFirstTrade
+            isFirstTrade := false
+    else if PS_SizingMode == 'Martingale'
+        size := calcMartingaleQty(entryPrice)
+    else if PS_SizingMode == 'RiskBased'
+        size := calcRiskBasedQty(entryPrice, stopLossPrice)
+    
+    // 如果计算失败，使用默认模式
+    if na(size) or size <= 0
+        size := calcDefaultQty(entryPrice)
+    
+    // 记录交易信息（用于马丁模式）
+    lastEntryPrice := entryPrice
+    lastStopLoss := stopLossPrice
+    
+    SIZE = str.tostring(size)
+    op_msg = '{"symbol":"'+TICKER+'","action":"OPEN","side":"LONG","size":' + SIZE + ',"comment":"OP-L@' + str.tostring(close, format.mintick) + '"}' 
+    strategy.entry('LONG', strategy.long, qty=size, comment='OP-L@' + str.tostring(close, format.mintick), alert_message=op_msg)
+    // 设置止损：开仓价格的 (100 - TSL_SL2)%
+    strategy.exit('CL-L', 'LONG', comment_profit='TP-L', comment_loss='SL-L', comment_trailing='TR-L', stop=stopLossPrice)
+    // 记录初始仓位大小（用于分批止盈）
+    initialPositionSize := size
+    partial1Closed := false
+    partial2Closed := false
+
+// ========================= 做多止盈逻辑 =========================
+
+// 计算当前收益率
+float longProfitPercent = na
+if strategy.position_size > 0 and not na(strategy.position_avg_price)
+    longProfitPercent := (close - strategy.position_avg_price) / strategy.position_avg_price * 100
+
+// 优先级1：分批止盈（如果启用）
+if TP_EnablePartial and strategy.position_size > 0 and not na(initialPositionSize) and initialPositionSize > 0
+    entryPrice = strategy.position_avg_price
+    
+    // 第一批止盈：达到TP_Partial1Percent利润时，平仓TP_Partial1Qty%
+    if not partial1Closed and longProfitPercent >= TP_Partial1Percent
+        partialQty = initialPositionSize * (TP_Partial1Qty / 100)
+        if partialQty > 0 and strategy.position_size >= partialQty
+            strategy.close('LONG', qty=partialQty, comment='TP1-L')
+            partial1Closed := true
+    
+    // 第二批止盈：达到TP_Partial2Percent利润时，平仓TP_Partial2Qty%
+    if partial1Closed and not partial2Closed and longProfitPercent >= TP_Partial2Percent
+        partialQty = initialPositionSize * (TP_Partial2Qty / 100)
+        if partialQty > 0 and strategy.position_size >= partialQty
+            strategy.close('LONG', qty=partialQty, comment='TP2-L')
+            partial2Closed := true
+
+// 优先级2：QQE反向信号止盈（如果启用且达到最小止盈目标）
+if TP_EnableQQE and strategy.position_size > 0 and close >= L_TP and QQE_dn
+    strategy.close_all(comment = "QQE反向信号止盈")
+
+// 优先级3：移动止损（如果启用且达到激活条件）
+if TP_EnableTrailing and strategy.position_size > 0 and not na(longProfitPercent) and longProfitPercent >= TP_TrailingActivation
+    trailingStopPrice = close * (1 - TP_TrailingPercent / 100)
+    // 确保移动止损不低于初始止损
+    if not na(lastStopLoss) and trailingStopPrice > lastStopLoss
+        // 更新止损价格
+        strategy.exit('CL-L', 'LONG', stop=trailingStopPrice, comment_loss='TR-L')
+
+// 优先级4：固定止盈目标 + 趋势反转保护（原有逻辑）
+// 如果价格超过止盈价且出现趋势反转信号，全部平仓（趋势止盈）
+if close > L_TP and moveHigh and strategy.position_size > 0
+    strategy.close_all(comment = "多头趋势止盈")
+// 如果价格超过止盈价但趋势不明显（价格回落），全部平仓（保护性止盈）
+else if close > L_TP and L_reversal and strategy.position_size > 0
+    strategy.close_all(comment = "多头趋势不明显保护性止盈")
+
+// ========================= 做空入场逻辑 =========================
+
+// 入场条件：无持仓或持多 且 允许做空 且 出现做空信号
+if strategy.position_size >= 0 and PS_Expect != 'LONG' and BEAR
+    entryPrice = close
+    // 计算止损价格
+    stopLossPrice = entryPrice * (100 + TSL_SL2) / 100
+    
+    // 根据仓位管理模式计算仓位大小
+    float size = na
+    if PS_SizingMode == 'Default'
+        size := calcDefaultQty(entryPrice)
+    else if PS_SizingMode == 'Rolling'
+        size := calcRollingQty(entryPrice)
+        // 首次交易后，更新isFirstTrade标志
+        if isFirstTrade
+            isFirstTrade := false
+    else if PS_SizingMode == 'Martingale'
+        size := calcMartingaleQty(entryPrice)
+    else if PS_SizingMode == 'RiskBased'
+        size := calcRiskBasedQty(entryPrice, stopLossPrice)
+    
+    // 如果计算失败，使用默认模式
+    if na(size) or size <= 0
+        size := calcDefaultQty(entryPrice)
+    
+    // 记录交易信息（用于马丁模式）
+    lastEntryPrice := entryPrice
+    lastStopLoss := stopLossPrice
+    
+    SIZE = str.tostring(size)
+    op_msg = '{"symbol":"'+TICKER+'","action":"OPEN","side":"SHORT","size":' + SIZE + ',"comment":"OP-S@' + str.tostring(close, format.mintick) + '"}' 
+    strategy.entry('SHORT', strategy.short, qty=size, comment='OP-S@' + str.tostring(close, format.mintick), alert_message=op_msg)
+    // 设置止损：开仓价格的 (100 + TSL_SL2)%
+    strategy.exit('CL-S', 'SHORT', comment_profit='TP-S', comment_loss='SL-S', comment_trailing='TR-S', stop=stopLossPrice)
+    // 记录初始仓位大小（用于分批止盈）
+    initialPositionSize := size
+    partial1Closed := false
+    partial2Closed := false
+
+// ========================= 做空止盈逻辑 =========================
+
+// 计算当前收益率
+float shortProfitPercent = na
+if strategy.position_size < 0 and not na(strategy.position_avg_price)
+    shortProfitPercent := (strategy.position_avg_price - close) / strategy.position_avg_price * 100
+
+// 优先级1：分批止盈（如果启用）
+if TP_EnablePartial and strategy.position_size < 0 and not na(initialPositionSize) and initialPositionSize > 0
+    entryPrice = strategy.position_avg_price
+    
+    // 第一批止盈：达到TP_Partial1Percent利润时，平仓TP_Partial1Qty%
+    if not partial1Closed and shortProfitPercent >= TP_Partial1Percent
+        partialQty = math.abs(initialPositionSize) * (TP_Partial1Qty / 100)
+        if partialQty > 0 and math.abs(strategy.position_size) >= partialQty
+            strategy.close('SHORT', qty=partialQty, comment='TP1-S')
+            partial1Closed := true
+    
+    // 第二批止盈：达到TP_Partial2Percent利润时，平仓TP_Partial2Qty%
+    if partial1Closed and not partial2Closed and shortProfitPercent >= TP_Partial2Percent
+        partialQty = math.abs(initialPositionSize) * (TP_Partial2Qty / 100)
+        if partialQty > 0 and math.abs(strategy.position_size) >= partialQty
+            strategy.close('SHORT', qty=partialQty, comment='TP2-S')
+            partial2Closed := true
+
+// 优先级2：QQE反向信号止盈（如果启用且达到最小止盈目标）
+if TP_EnableQQE and strategy.position_size < 0 and close <= S_TP and QQE_up
+    strategy.close_all(comment = "QQE反向信号止盈")
+
+// 优先级3：移动止损（如果启用且达到激活条件）
+if TP_EnableTrailing and strategy.position_size < 0 and not na(shortProfitPercent) and shortProfitPercent >= TP_TrailingActivation
+    trailingStopPrice = close * (1 + TP_TrailingPercent / 100)
+    // 确保移动止损不高于初始止损
+    if not na(lastStopLoss) and trailingStopPrice < lastStopLoss
+        // 更新止损价格
+        strategy.exit('CL-S', 'SHORT', stop=trailingStopPrice, comment_loss='TR-S')
+
+// 优先级4：固定止盈目标 + 趋势反转保护（原有逻辑）
+// 如果价格低于止盈价且出现趋势反转信号，全部平仓（趋势止盈）
+// 注意：moveBottom 和 S_reversal 的逻辑可能有问题，空单应该是价格上穿而不是下穿，但测试发现下穿效果比较好
+if close < S_TP and moveBottom and strategy.position_size < 0
+    strategy.close_all(comment = "空头趋势止盈")
+// 如果价格低于止盈价但趋势不明显（价格反弹），全部平仓（保护性止盈）
+// 注意：S_reversal 的逻辑可能有问题，空单应该是价格上穿而不是下穿，但测试发现下穿效果比较好
+else if close < S_TP and S_reversal and strategy.position_size < 0
+    strategy.close_all(comment = "空头趋势不明显保护性止盈")
+
+

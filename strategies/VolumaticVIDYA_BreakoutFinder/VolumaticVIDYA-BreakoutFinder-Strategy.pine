@@ -1,0 +1,310 @@
+//@version=6
+strategy("VolumaticVIDYA+BreakoutFinder", overlay=true,
+     initial_capital=10000,
+     default_qty_type=strategy.percent_of_equity,
+     default_qty_value=100,
+     margin_long=0, margin_short=0,
+     max_boxes_count=500, max_lines_count=500, max_labels_count=500, max_bars_back=5000)
+
+// ==========================================================================================
+// 方向开关
+// ==========================================================================================
+string dirGroup = "方向开关"
+bool  enableLong  = input.bool(true,  "启用做多", group=dirGroup)
+bool  enableShort = input.bool(true,  "启用做空", group=dirGroup)
+
+// ==========================================================================================
+// VIDYA参数
+// ==========================================================================================
+string vidyaGroup = "VIDYA参数"
+int   vidyaLength = input.int(10, "VIDYA Length", minval=1, group=vidyaGroup)
+int   vidyaMomentum = input.int(20, "VIDYA Momentum", minval=1, group=vidyaGroup)
+float bandDistance = input.float(4.0, "Distance factor for upper/lower bands", minval=0.1, step=0.1, group=vidyaGroup)
+float vidyaSource = input.source(close, "VIDYA Source", group=vidyaGroup)
+
+// ==========================================================================================
+// Breakout Finder参数
+// ==========================================================================================
+string bfGroup = "Breakout Finder参数"
+int   bfPeriod = input.int(5, "Period", minval=2, group=bfGroup)
+int   bfMaxLength = input.int(200, "Max Breakout Length", minval=30, maxval=300, group=bfGroup)
+float bfThresholdRate = input.float(3.0, "Threshold Rate %", minval=1.0, maxval=10.0, step=0.1, group=bfGroup) / 100
+int   bfMinTest = input.int(2, "Minimum Number of Tests", minval=1, group=bfGroup)
+
+// ==========================================================================================
+// 止损止盈参数
+// ==========================================================================================
+string slTpGroup = "止损止盈参数"
+int   stopLossBars = input.int(10, "止损K线数量", minval=1, tooltip="做多止损设在当前N根K线的最高点，做空止损设在当前N根K线的最低点", group=slTpGroup)
+float riskRewardRatio = input.float(2.0, "盈亏比(R:R)", minval=0.1, step=0.1, tooltip="止盈盈亏比，默认1:2", group=slTpGroup)
+
+// ==========================================================================================
+// 辅助函数
+// ==========================================================================================
+
+// VIDYA计算函数
+vidya_calc(float src, int vidya_length, int vidya_momentum) =>
+    float momentum = ta.change(src)
+    float sum_pos_momentum = math.sum(momentum >= 0 ? momentum : 0.0, vidya_momentum)
+    float sum_neg_momentum = math.sum(momentum >= 0 ? 0.0 : -momentum, vidya_momentum)
+    float abs_cmo = math.abs(100 * (sum_pos_momentum - sum_neg_momentum) / (sum_pos_momentum + sum_neg_momentum))
+    float alpha = 2 / (vidya_length + 1)
+    var float vidya_value = 0.0
+    vidya_value := alpha * abs_cmo / 100 * src + (1 - alpha * abs_cmo / 100) * nz(vidya_value[1])
+    ta.sma(vidya_value, 15)
+
+// ==========================================================================================
+// 指标计算
+// ==========================================================================================
+
+// VIDYA指标计算
+float atr_value = ta.atr(200)
+float vidya_value = vidya_calc(vidyaSource, vidyaLength, vidyaMomentum)
+float upper_band = vidya_value + atr_value * bandDistance
+float lower_band = vidya_value - atr_value * bandDistance
+
+var bool is_trend_up = false
+if ta.crossover(vidyaSource, upper_band)
+    is_trend_up := true
+if ta.crossunder(vidyaSource, lower_band)
+    is_trend_up := false
+
+// VIDYA smoothed_value计算
+var float smoothed_value = na
+if is_trend_up
+    smoothed_value := lower_band
+if not is_trend_up
+    smoothed_value := upper_band
+if ta.change(is_trend_up)
+    smoothed_value := na
+
+// VIDYA趋势反转信号
+bool trend_cross_up = not is_trend_up[1] and is_trend_up
+bool trend_cross_down = not is_trend_up and is_trend_up[1]
+
+// Breakout Finder计算
+var array<float> phval = array.new<float>(0)
+var array<int> phloc = array.new<int>(0)
+var array<float> plval = array.new<float>(0)
+var array<int> plloc = array.new<int>(0)
+
+int pivot_left_bars = 3
+int pivot_right_bars = pivot_left_bars
+bool ph = not na(ta.pivothigh(high, pivot_left_bars, pivot_right_bars))
+bool pl = not na(ta.pivotlow(low, pivot_left_bars, pivot_right_bars))
+
+if ph
+    array.unshift(phval, high[pivot_right_bars])
+    array.unshift(phloc, bar_index - pivot_right_bars)
+    if array.size(phval) > 1
+        for x = array.size(phloc) - 1 to 1
+            if bar_index - array.get(phloc, x) > bfMaxLength
+                array.pop(phloc)
+                array.pop(phval)
+
+if pl
+    array.unshift(plval, low[pivot_right_bars])
+    array.unshift(plloc, bar_index - pivot_right_bars)
+    if array.size(plval) > 1
+        for x = array.size(plloc) - 1 to 1
+            if bar_index - array.get(plloc, x) > bfMaxLength
+                array.pop(plloc)
+                array.pop(plval)
+
+// 计算通道宽度
+int lll = math.max(math.min(bar_index, 300), 1)
+float h_ = ta.highest(lll)
+float l_ = ta.lowest(lll)
+float chwidth = (h_ - l_) * bfThresholdRate
+
+// 看涨突破检测
+float bomax = na
+int bostart = bar_index
+int num = 0
+float hgst = ta.highest(bfPeriod)[1]
+
+bool bullishBreakout = false
+if array.size(phval) >= bfMinTest and close > open and close > hgst
+    bomax := array.get(phval, 0)
+    int xx = 0
+    for x = 0 to array.size(phval) - 1
+        if array.get(phval, x) >= close
+            break
+        xx := x
+        bomax := math.max(bomax, array.get(phval, x))
+    if xx >= bfMinTest and open <= bomax
+        for x = 0 to xx
+            if array.get(phval, x) <= bomax and array.get(phval, x) >= bomax - chwidth
+                num += 1
+                bostart := array.get(phloc, x)
+        if num < bfMinTest or hgst >= bomax
+            bomax := na
+
+bullishBreakout := not na(bomax) and num >= bfMinTest
+
+// 看跌突破检测
+float bomin = na
+bostart := bar_index
+int num1 = 0
+float lwst = ta.lowest(bfPeriod)[1]
+
+bool bearishBreakout = false
+if array.size(plval) >= bfMinTest and close < open and close < lwst
+    bomin := array.get(plval, 0)
+    int xx = 0
+    for x = 0 to array.size(plval) - 1
+        if array.get(plval, x) <= close
+            break
+        xx := x
+        bomin := math.min(bomin, array.get(plval, x))
+    if xx >= bfMinTest and open >= bomin
+        for x = 0 to xx
+            if array.get(plval, x) >= bomin and array.get(plval, x) <= bomin + chwidth
+                num1 += 1
+                bostart := array.get(plloc, x)
+        if num1 < bfMinTest or lwst <= bomin
+            bomin := na
+
+bearishBreakout := not na(bomin) and num1 >= bfMinTest
+
+// ==========================================================================================
+// 入场条件
+// ==========================================================================================
+
+// 做多入场条件：VIDYA绿色箭头 + Breakout Finder蓝色三角形 + 看涨K线
+bool vidyaLongSignal = trend_cross_up[1]  // VIDYA绿色箭头（看涨反转）
+bool breakoutLongSignal = bullishBreakout  // Breakout Finder蓝色三角形
+bool candleLongSignal = close > open  // 看涨K线
+bool longEntryCondition = enableLong and strategy.position_size == 0 and strategy.opentrades == 0 and 
+                          vidyaLongSignal and breakoutLongSignal and candleLongSignal
+
+// 做空入场条件：VIDYA红色箭头 + Breakout Finder红色三角形 + 看跌K线
+bool vidyaShortSignal = trend_cross_down[1]  // VIDYA红色箭头（看跌反转）
+bool breakoutShortSignal = bearishBreakout  // Breakout Finder红色三角形
+bool candleShortSignal = close < open  // 看跌K线
+bool shortEntryCondition = enableShort and strategy.position_size == 0 and strategy.opentrades == 0 and 
+                           vidyaShortSignal and breakoutShortSignal and candleShortSignal
+
+// ==========================================================================================
+// 多单/空单变量
+// ==========================================================================================
+
+var float longEntryPrice      = na
+var float longStopLoss        = na
+var float longTakeProfit      = na
+var bool  longEntryExecuted   = false
+
+var float shortEntryPrice     = na
+var float shortStopLoss       = na
+var float shortTakeProfit     = na
+var bool  shortEntryExecuted  = false
+
+var box[] longBoxes  = array.new_box()
+var box[] shortBoxes = array.new_box()
+
+// 平仓后统一重置
+bool positionClosed = strategy.position_size[1] != 0 and strategy.position_size == 0
+if positionClosed
+    longEntryExecuted   := false
+    longEntryPrice      := na
+    longStopLoss        := na
+    longTakeProfit      := na
+
+    shortEntryExecuted  := false
+    shortEntryPrice     := na
+    shortStopLoss       := na
+    shortTakeProfit     := na
+
+// ==========================================================================================
+// 多单入场：初始SL/TP（不合法则放弃这一单）
+// ==========================================================================================
+
+if longEntryCondition
+    float entryPrice = close
+    
+    // 止损设在当前10根K线的最高点
+    float slCandidate = ta.highest(high, stopLossBars)
+    bool  slOk = not na(slCandidate) and slCandidate < entryPrice
+    
+    if slOk
+        float risk = entryPrice - slCandidate
+        float tp   = entryPrice + risk * riskRewardRatio
+        
+        bool tpOk = risk > 0 and tp > entryPrice
+        
+        if tpOk
+            longEntryPrice    := entryPrice
+            longStopLoss      := slCandidate
+            longTakeProfit    := tp
+            
+            longEntryExecuted := true
+            
+            box b = box.new(bar_index, longTakeProfit, bar_index + 10, longStopLoss,
+                 border_color=color.new(color.white, 0), border_width=1, bgcolor=color.new(color.white, 90), extend=extend.none)
+            array.push(longBoxes, b)
+            
+            strategy.entry("Long", strategy.long, comment="做多")
+
+// ==========================================================================================
+// 空单入场：初始SL/TP + 画白框（不合法则放弃这一单）
+// ==========================================================================================
+
+if shortEntryCondition
+    float entryPrice = close
+    
+    // 止损设在当前10根K线的最低点
+    float slCandidate = ta.lowest(low, stopLossBars)
+    bool  slOk = not na(slCandidate) and slCandidate > entryPrice
+    
+    if slOk
+        float risk = slCandidate - entryPrice
+        float tp   = entryPrice - risk * riskRewardRatio
+        
+        bool tpOk = risk > 0 and tp < entryPrice
+        
+        if tpOk
+            shortEntryPrice      := entryPrice
+            shortStopLoss        := slCandidate
+            shortTakeProfit      := tp
+            
+            shortEntryExecuted := true
+            
+            // 空单白色框：上边界=SL，下边界=TP
+            box sb = box.new(bar_index, shortStopLoss, bar_index + 10, shortTakeProfit,
+                 border_color=color.new(color.white, 0), border_width=1, bgcolor=color.new(color.white, 90), extend=extend.none)
+            array.push(shortBoxes, sb)
+            
+            strategy.entry("Short", strategy.short, comment="做空")
+
+// ==========================================================================================
+// 执行止盈/止损（分方向独立参数）
+// ==========================================================================================
+
+if strategy.position_size > 0 and longEntryExecuted and not na(longStopLoss) and not na(longTakeProfit)
+    strategy.exit("Long SLTP", from_entry="Long", stop=longStopLoss, limit=longTakeProfit)
+
+if strategy.position_size < 0 and shortEntryExecuted and not na(shortStopLoss) and not na(shortTakeProfit)
+    strategy.exit("Short SLTP", from_entry="Short", stop=shortStopLoss, limit=shortTakeProfit)
+
+// ==========================================================================================
+// 可视化
+// ==========================================================================================
+
+// VIDYA可视化
+color trend_color = is_trend_up ? color.new(#17dfad, 0) : color.new(#dd326b, 0)
+p1 = plot(smoothed_value, "VIDYA", color=trend_color, linewidth=2, style=plot.style_linebr)
+p2 = plot(hl2, display=display.none)
+fill(p1, p2, color.new(trend_color, 80))
+
+// VIDYA趋势反转箭头
+plotshape(series=trend_cross_up[1] ? smoothed_value[0] : na, title="VIDYA看涨", style=shape.labelup, 
+         location=location.absolute, color=color.new(#17dfad, 50), text="▲", textcolor=color.white)
+plotshape(series=trend_cross_down[1] ? smoothed_value[0] : na, title="VIDYA看跌", style=shape.labeldown, 
+         location=location.absolute, color=color.new(#dd326b, 50), text="▼", textcolor=color.white)
+
+// Breakout Finder可视化
+plotshape(series=bullishBreakout, title="Breakout看涨", location=location.belowbar, 
+         style=shape.triangleup, color=color.new(color.blue, 0), size=size.small)
+plotshape(series=bearishBreakout, title="Breakout看跌", location=location.abovebar, 
+         style=shape.triangledown, color=color.new(color.red, 0), size=size.small)
+

@@ -1,0 +1,1182 @@
+//@version=5
+strategy('SuperTrend & ssl-0', overlay=true, default_qty_value=100,default_qty_type=strategy.cash, commission_value=0.07, initial_capital=100,  max_lines_count = 500, max_labels_count = 500, max_bars_back=500) // 定义策略名称并显示在价格图表上
+
+// doge 使用hikenhash要好一点
+// 有的使用原始图表好一点
+
+// ========== Range Filter - B&S Signals swiming free ==========
+//Range Size Function// ————— Inputs —————
+rng_src = input.source(close, "Swing Source")
+rng_per = input.int(60, minval=1, step=5, title="Swing Period")
+rng_qty = input.float(2.5, minval=0.0000001, step=0.1, title="Swing Multiplier")
+use_barcolor = input.bool(false, title="Swing Bar Colors On/Off")
+
+// ————— Range Size Calculation —————
+rng_size(x, qty, n) =>
+    wper  = (n * 2) - 1
+    avrng = ta.ema(math.abs(x - x[1]), n)
+    AC    = ta.ema(avrng, wper) * qty
+    AC
+
+// ————— Range Filter Function —————
+rng_filt(x, rng_, n) =>
+    r = rng_
+    var rfilt = array.new_float(2, x)
+    array.set(rfilt, 1, array.get(rfilt, 0))
+    if x - r > array.get(rfilt, 1)
+        array.set(rfilt, 0, x - r)
+    if x + r < array.get(rfilt, 1)
+        array.set(rfilt, 0, x + r)
+    rng_filt1 = array.get(rfilt, 0)
+    hi_band = rng_filt1 + r
+    lo_band = rng_filt1 - r
+    [hi_band, lo_band, rng_filt1]
+
+// ————— Compute Range Filter —————
+[h_band, l_band, filt] = rng_filt(rng_src, rng_size(rng_src, rng_qty, rng_per), rng_per)
+
+// ————— Direction Conditions —————
+var float fdir = na
+fdir := filt > filt[1] ? 1 : filt < filt[1] ? -1 : fdir
+upward   = fdir == 1 ? 1 : 0
+downward = fdir == -1 ? 1 : 0
+
+// ————— Trade Conditions —————
+longCond  = (rng_src > filt and rng_src > rng_src[1] and upward > 0) or (rng_src > filt and rng_src < rng_src[1] and upward > 0)
+shortCond = (rng_src < filt and rng_src < rng_src[1] and downward > 0) or (rng_src < filt and rng_src > rng_src[1] and downward > 0)
+
+var int CondIni = 0
+CondIni := longCond ? 1 : shortCond ? -1 : CondIni[1]
+longCondition  = longCond and CondIni[1] == -1
+shortCondition = shortCond and CondIni[1] == 1
+
+// ————— Color Settings —————
+filt_color = bool(upward) ? color.new(#05ff9b, 0) : downward ? color.new(#ff0583, 0) : color.new(#cccccc, 0)
+// bar_color  = upward and rng_src > filt ? (rng_src > rng_src[1] ? color.new(#05ff9b, 85) : color.new(#00b36b, 85)) :
+//              downward and rng_src < filt ? (rng_src < rng_src[1] ? color.new(#ff0583, 85) : color.new(#b8005d, 85)) :
+//              color.new(#cccccc, 90)
+
+// ————— Plots —————
+filt_plot = plot(filt, color=filt_color, linewidth=2, title="Filter")
+
+// h_band_plot = plot(h_band, color=color.new(#05ff9b, 85), title="High Band")
+// l_band_plot = plot(l_band, color=color.new(#ff0583, 85), title="Low Band")
+// fill(h_band_plot, filt_plot, color=color.new(#00b36b, 85), title="High Band Fill")
+// fill(l_band_plot, filt_plot, color=color.new(#b8005d, 85), title="Low Band Fill")
+// barcolor(use_barcolor ? bar_color : na)
+
+// ————— Signal Labels —————
+// plotshape(longCondition, title="Buy Signal", text="BUY", textcolor=color.white, style=shape.labelup, size=size.normal, location=location.belowbar, color=color.new(color.green, 0))
+// plotshape(shortCondition, title="Sell Signal", text="SELL", textcolor=color.white, style=shape.labeldown, size=size.normal, location=location.abovebar, color=color.new(color.red, 0))
+
+// ————— Alerts（可启用） —————
+// alertcondition(longCondition, title="Buy Alert", message="BUY")
+// alertcondition(shortCondition, title="Sell Alert", message="SELL")
+
+
+
+showDema = input.bool(title='展示DEMA', defval = true)
+
+// ========== 短周期 DEMA (双指数移动平均线) ==========
+var float dema_short = na
+var float dema_log = na
+length_short = input.int(20, minval=1, title='短周期 DEMA 长度')
+ema_src = input(hl2, title='DEMA数据源')
+e1 = ta.ema(ema_src, length_short)
+e2 = ta.ema(e1, length_short)
+dema_short := 2 * e1 - e2
+// plot(showDema ? dema_short : na, 'DEMA', color=color.rgb(251, 136, 5))
+
+// ========== 长周期 DEMA ==========
+length_log = input.int(144, minval=1, title='长周期 DEMA 长度')
+e1_log = ta.ema(ema_src, length_log)
+e2_log = ta.ema(e1_log, length_log)
+dema_log := 2 * e1_log - e2_log
+plot(showDema ? dema_log : na, 'DEMA_long', color=color.rgb(251, 136, 5))
+
+plot(showDema ? ta.sma(close, 169) : na, 'DEMA_long', color=color.rgb(245, 245, 248))
+
+// ========== GMMA 参数设置 ==========
+showGMMA = input.bool(title='展示GMMA', defval = false)
+
+_Period1 = input.int(3, "EMA1 Period", minval=1, group="GMMA")
+_Period2 = input.int(5, "EMA2 Period", minval=1, group="GMMA")
+_Period3 = input.int(8, "EMA3 Period", minval=1, group="GMMA")
+_Period4 = input.int(10, "EMA4 Period", minval=1, group="GMMA")
+_Period5 = input.int(12, "EMA5 Period", minval=1, group="GMMA")
+_Period6 = input.int(15, "EMA6 Period", minval=1, group="GMMA")
+_Period7 = input.int(30, "EMA7 Period", minval=1, group="GMMA")
+_Period8 = input.int(35, "EMA8 Period", minval=1, group="GMMA")
+_Period9 = input.int(40, "EMA9 Period", minval=1, group="GMMA")
+_Period10 = input.int(45, "EMA10 Period", minval=1, group="GMMA")
+_Period11 = input.int(50, "EMA11 Period", minval=1, group="GMMA")
+_Period12 = input.int(60, "EMA12 Period", minval=1, group="GMMA")
+
+// ========== GMMA 计算 ==========
+ema1 = ta.ema(close, _Period1)
+ema2 = ta.ema(close, _Period2)
+ema3 = ta.ema(close, _Period3)
+ema4 = ta.ema(close, _Period4)
+ema5 = ta.ema(close, _Period5)
+ema6 = ta.ema(close, _Period6)
+ema7 = ta.ema(close, _Period7)
+ema8 = ta.ema(close, _Period8)
+ema9 = ta.ema(close, _Period9)
+ema10 = ta.ema(close, _Period10)
+ema11 = ta.ema(close, _Period11)
+ema12 = ta.ema(close, _Period12)
+
+// ========== GMMA 绘制 ==========
+plot(showGMMA ? ema1 : na, color=color.green, title="short1")
+plot(showGMMA ? ema2 : na, color=color.green, title="short2")
+plot(showGMMA ? ema3 : na, color=color.green, title="short3")
+plot(showGMMA ? ema4 : na, color=color.green, title="short4")
+plot(showGMMA ? ema5 : na, color=color.green, title="short5")
+plot(showGMMA ? ema6 : na, color=color.green, title="short6")
+
+plot(showGMMA ? ema7 : na, color=color.red, title="long1")
+plot(showGMMA ? ema8 : na, color=color.red, title="long2")
+plot(showGMMA ? ema9 : na, color=color.red, title="long3")
+plot(showGMMA ? ema10 : na, color=color.red, title="long4")
+plot(showGMMA ? ema11 : na, color=color.red, title="long5")
+plot(showGMMA ? ema12 : na, color=color.red, title="long6")
+
+// ========== SuperTrend 参数设置 ==========
+Periods = input(title='SuperTrend ATR 周期', defval=9)
+src = input(hl2, title='SuperTrend数据源')
+Multiplier = input.float(title='SuperTrend ATR 乘数', step=0.1, defval=12)
+changeATR = input(title='切换 ATR 计算方法？', defval=true)
+showsignals = input(title='显示买入/卖出信号？', defval=false)
+highlighting = input(title='高亮趋势？', defval=false)
+sslRateUp = input.float(title='ssl斜率-up', defval=-0.00004, step=0.00001)
+sslRateDown = input.float(title='ssl斜率-down', defval=-0.00008, step=0.00001)
+
+// ATR 计算
+atr2 = ta.sma(ta.tr, Periods)
+atr = changeATR ? ta.atr(Periods) : atr2
+
+// SuperTrend 计算
+up = src - Multiplier * atr
+up1 = nz(up[1], up)
+up := close[1] > up1 ? math.max(up, up1) : up
+
+dn = src + Multiplier * atr
+dn1 = nz(dn[1], dn)
+dn := close[1] < dn1 ? math.min(dn, dn1) : dn
+
+trend = 1
+trend := nz(trend[1], trend)
+trend := (trend == -1 and close > dn1) ? 1 : (trend == 1 and close < up1 ? -1 : trend)
+
+// 绘制趋势线
+upPlot = plot(up, title='上升趋势', style=plot.style_linebr, linewidth=1, color=trend == 1 ? color.new(#8df978, 60) : color.new(#ff52ff, 60))
+dnPlot = plot(dn, title='下降趋势', style=plot.style_linebr, linewidth=1, color=trend == 1 ? color.new(#8df978, 60) : color.new(#ff52ff, 60))
+
+
+
+// ========== SSL 普通图表 ==========
+
+period = input.int(title="SSL Period", defval=200)
+len = input.int(title="SSL WMA Length", defval=200)
+
+smaHigh = ta.wma(high, len)
+smaLow  = ta.wma(low, len)
+
+var float Hlv = na
+Hlv := close > smaHigh ? 1 : close < smaLow ? -1 : Hlv[1]
+
+sslDown = Hlv < 0 ? smaHigh : smaLow
+sslUp   = Hlv < 0 ? smaLow  : smaHigh
+
+// 画出 SSL 上下轨
+p1 = plot(sslDown, linewidth=1, color=color.new(color.green, 80))
+p2 = plot(sslUp, linewidth=1, color=color.new(color.green, 80))
+
+// 填充区域
+fill(p1, p2, color = Hlv > 0 ? color.new(color.green, 80) : color.new(color.red, 80))
+
+// ========== SSL2 普通图表（period和len为原值的3倍）==========
+period2 = period * 3
+len2 = len * 3
+
+smaHigh2 = ta.wma(high, len2)
+smaLow2  = ta.wma(low, len2)
+
+var float Hlv2 = na
+Hlv2 := close > smaHigh2 ? 1 : close < smaLow2 ? -1 : Hlv2[1]
+
+sslDown2 = Hlv2 < 0 ? smaHigh2 : smaLow2
+sslUp2   = Hlv2 < 0 ? smaLow2  : smaHigh2
+
+// 画出 SSL2 上下轨
+p3 = plot(sslDown2, linewidth=1, color=color.new(color.blue, 80))
+p4 = plot(sslUp2, linewidth=1, color=color.new(color.blue, 80))
+
+// 填充区域
+fill(p3, p4, color = Hlv2 > 0 ? color.new(color.blue, 80) : color.new(color.orange, 80))
+
+// ========== Fibonacci Bollinger Bands ==========
+fbb_length = input.int(200, minval=1, title="fbb_length")
+fbb_src = input(hlc3, title="fbb_Source")
+mult = input.float(3.0, minval=0.001, maxval=50.0, title="fbb_mult")
+
+fbb_basis = ta.vwma(fbb_src, fbb_length)
+fbb_dev = mult * ta.stdev(fbb_src, fbb_length)
+
+upper_3 = fbb_basis + (0.5 * fbb_dev)
+upper_4 = fbb_basis + (0.618 * fbb_dev)
+upper_5 = fbb_basis + (0.764 * fbb_dev)
+upper_6 = fbb_basis + (1.0 * fbb_dev)
+upper_7 = fbb_basis + (1.414 * fbb_dev)
+
+lower_3 = fbb_basis - (0.5 * fbb_dev)
+lower_4 = fbb_basis - (0.618 * fbb_dev)
+lower_5 = fbb_basis - (0.764 * fbb_dev)
+lower_6 = fbb_basis - (1.0 * fbb_dev)
+lower_7 = fbb_basis - (1.414 * fbb_dev)
+
+// 上方线
+// p4 = plot(upper_3, color=color.rgb(255, 255, 255, 80), linewidth=1, title="0.5")
+// p4 = plot(upper_4, color=color.rgb(255, 255, 255, 80), linewidth=1, title="0.618")
+// p5 = plot(upper_5, color=color.rgb(255, 255, 255, 80), linewidth=1, title="0.764")
+p6 = plot(upper_6, color=color.rgb(255, 82, 82, 80), linewidth=1, title="1")
+p7 = plot(upper_7, color=color.rgb(255, 82, 82, 80), linewidth=1, title="1.414")
+
+// 下方线
+// p16 = plot(lower_3, color=color.rgb(255, 255, 255, 80), linewidth=1, title="-0.5")
+// p16 = plot(lower_4, color=color.rgb(255, 255, 255, 80), linewidth=1, title="-0.618")
+// p17 = plot(lower_5, color=color.rgb(255, 255, 255, 80), linewidth=1, title="-0.764")
+p18 = plot(lower_6, color=color.rgb(76, 175, 79, 80), linewidth=1, title="-1")
+p19 = plot(lower_7, color=color.rgb(76, 175, 79, 80), linewidth=1, title="-1.414")
+
+// ===== 灰色填充区域 =====
+fill(p6, p7, color=color.new(#787b86, 80), title="Upper Gray Fill")
+fill(p18, p19, color=color.new(color.gray, 80), title="Lower Gray Fill")
+
+
+
+
+// ========== WaveTrend Cross ==========
+
+// === 参数 ===
+n1 = input.int(10, "WT Channel Length")
+n2 = input.int(21, "WT Average Length")
+
+obLevel1 = input.int(60, "OverBought Level 1 (+60)")
+obLevel2 = input.int(53, "OverBought Level 2 (+53)")
+midLevelHigh = input.int(50, "看空门槛线 (+50)")
+midLevelLow = input.int(-50, "看多门槛线 (-50)")
+osLevel2 = input.int(-53, "OverSold Level 2 (-53)")
+osLevel1 = input.int(-60, "OverSold Level 1 (-60)")
+
+// === WaveTrend 指标计算 ===
+ap = hlc3 
+esa = ta.ema(ap, n1)
+d = ta.ema(math.abs(ap - esa), n1)
+ci = (ap - esa) / (0.015 * d)
+tci = ta.ema(ci, n2)
+
+wt1 = tci
+wt2 = ta.sma(wt1, 4)
+
+// === 策略信号 ===
+wtlongSignal  = ta.crossover(wt1, wt2) and wt1 < midLevelLow and wt2 < midLevelLow
+wtShortSignal = ta.crossunder(wt1, wt2) and wt1 > midLevelHigh and wt2 > midLevelHigh
+
+
+
+
+
+// ========== 开仓逻辑 ==========
+var bool isHoldingPosition = false // 是否持有仓位
+var int buySignalBar = na // 记录看多信号的 K 线位置
+var int sellSignalBar = na // 记录看空信号的 K 线位置
+var float entryPrice = na
+var int entryBarIndex = na
+var int upArrivedProfit = 0
+var int downArrivedProfit = 0
+
+
+// 创建标签（方便调试）
+var label myLabel = label.new(bar_index, close, text="", style=label.style_circle, color=color.blue, textcolor=color.white)
+// 更新标签内容
+// label.set_text(myLabel, "当前价格: " + str.tostring(close))
+// label.set_xy(myLabel, bar_index, close)
+
+// 开单所需变量
+maxSSL = math.max(sslUp, sslDown)
+minSSL = math.min(sslUp, sslDown)
+section3PositionUp = false
+section3PositionDown = false
+// var float addQulityPrice = 0 // 可能需要,但是tradingview不支持
+
+// 看多信号
+section3Up1 = trend == 1 and bool(upward) and (close > open) and close > maxSSL and math.min(low, low[1]) <= maxSSL
+section3Up2 = (maxSSL - math.max(smaHigh[2], smaLow[2]))/math.max(smaHigh[2], smaLow[2]) > sslRateUp
+// section3Up3 = close > maxSSL and close > filt and Hlv > 0 and Hlv[2] < 0 and filt > maxSSL and filt[2] < maxSSL // filt线上穿ssl，并且ssl由空转多
+section3Up4 = close < math.min(up, dn) + math.abs(up - dn)*0.6 // supertrend中线附近才行
+section3Up5 = trend == 1 and close >= filt and (close > open) and close > maxSSL and math.min(low, low[1]) <= maxSSL
+section3Up6 = wt1 < midLevelLow and wt2 < midLevelLow
+section3Up = (section3Up1 and section3Up2)// or (section3Up5 and section3Up2)
+buySignal = (section3Up)
+if buySignal
+    buySignalBar := bar_index // 记录看多信号的 K 线位置
+    if section3Up
+        section3PositionUp := true
+
+// 看空信号
+section3Down1 = trend == -1 and bool(downward) and (close < open) and close < minSSL and math.max(high, high[1]) >= minSSL
+section3Down2 =  (maxSSL - math.max(smaHigh[2], smaLow[2]))/math.max(smaHigh[2], smaLow[2]) < sslRateDown
+// section3Down3 = close < minSSL and close < filt and Hlv < 0 and Hlv[2] > 0 and filt < minSSL and filt[2] > minSSL // filt线下穿ssl，并且ssl由多转空
+section3Down4 = close > math.max(up, dn) - math.abs(up - dn)*0.6 // supertrend中线附近才行
+section3Down5 = trend == -1 and close <= filt and (close < open) and close < minSSL and math.max(high, high[1]) >= minSSL
+section3Down6 = wt1 > midLevelHigh and wt2 > midLevelHigh
+section3Down = (section3Down1 and section3Down2) // or (section3Down5 and section3Down2)
+sellSignal = (section3Down)
+if sellSignal
+    sellSignalBar := bar_index // 记录看空信号的 K 线位置
+    if section3Down
+        section3PositionDown := true
+
+if (not isHoldingPosition)
+    // 开多仓条件
+    if (section3Up) //  and longCond
+        strategy.entry('buy', strategy.long, comment='多')
+        buySignalBar := na // 开仓后移除看多信号
+        entryPrice := close
+        entryBarIndex := bar_index
+        upArrivedProfit := 0
+        // addQulityPrice := (close + math.min(low, low[1], low[2], low[3]))/2
+
+    // 开空仓条件
+    if (section3Down) //  and shortCond
+        strategy.entry('sell', strategy.short, comment='空')
+        sellSignalBar := na // 开仓后移除看空信号
+        entryPrice := close
+        entryBarIndex := bar_index
+        downArrivedProfit := 0
+        // addQulityPrice := (close + math.max(high, high[1], high[2], high[3]))/2
+
+// ========== 止盈止损2 ==========
+
+var float buytakeProfitPrice = na
+var float buytakeProfitPrice2 = na
+var float buystopLossPrice = na
+var float selltakeProfitPrice =  na
+var float selltakeProfitPrice2 =  na
+var float sellstopLossPrice =  na
+var bool isTrailingActive = false // 是否启动了移动止盈止损
+var bool isInitialStopSet = false
+var int index = na
+
+
+// ========== 参数设置 ==========
+profitProtectRatio = input.float(0.1, '止盈保留利润比例', minval=0, step=0.1)
+arriveStopProfitCount = input.float(3, '第几次触发superTrend止盈', minval=1, step=1)
+
+
+// ========== 止盈/止损 ==========
+maxSuper = math.max(up, dn)
+minSuper = math.min(up, dn)
+
+// ========== 多仓移动止盈止损逻辑 ==========
+if strategy.position_size > 0 // 当前持有多仓close < math.min(sslUp, sslDown)
+    closeUp1 = close <= minSuper or (upArrivedProfit >= arriveStopProfitCount and high >= maxSuper) or (bool(buystopLossPrice) and close < buystopLossPrice)
+    // closeUp2 = high >= upper_5 and high <= upper_6 and high >= maxSuper and close < maxSuper
+    // closeUp3 = upArrivedProfit >= 1 and close < minSSL
+    // closeUp4 = upArrivedProfit >= 1 and close >= upper_7
+    if closeUp1 // or closeUp2 or closeUp3
+        strategy.close('buy', comment=close > strategy.opentrades.entry_price(0) ? '止盈平多' : '止损平多')
+        // 绘制矩形
+        bg=close > entryPrice ? color.new(color.blue, 80) : color.new(color.yellow, 80)
+        top_left=chart.point.from_index(index=entryBarIndex,price=entryPrice)
+        bottom_right=chart.point.from_index(index=bar_index,price=close)
+        box.new(top_left=top_left, bottom_right=bottom_right, border_color=bg, bgcolor=bg)
+        // 重置变量
+        isInitialStopSet := false
+        isTrailingActive := false
+        buytakeProfitPrice := na
+        buytakeProfitPrice2 := na
+        buystopLossPrice := na
+        index := na
+        upArrivedProfit := 0
+        sellstopLossPrice := 0
+        entryBarIndex := bar_index
+    else
+        // up 根据superTrend添加止盈保护
+        if (high >= math.max(up, dn))
+        // if (close >= math.min(up, dn) + math.abs(up - dn)*0.9)
+            upArrivedProfit := upArrivedProfit + 1
+            if (upArrivedProfit == 1)
+                buystopLossPrice := strategy.opentrades.entry_price(0) + math.abs(high - strategy.opentrades.entry_price(0)) * profitProtectRatio
+        // if (math.max(up, dn) < upper_7)
+        // if (high >= upper_6 and upArrivedProfit >= 1)
+        //     buystopLossPrice := strategy.opentrades.entry_price(0) + math.abs(high - strategy.opentrades.entry_price(0)) * 0.5
+        // up 根据fib添加止盈保护
+        else if (high >= upper_7 and upArrivedProfit >= 1)
+            buystopLossPrice := strategy.opentrades.entry_price(0) + math.abs(high - strategy.opentrades.entry_price(0)) * 0.9
+    
+// ========== 空仓移动止盈止损逻辑 ==========
+if strategy.position_size < 0 // 当前持有空仓close > math.max(sslUp, sslDown)
+    closeDown1 = close >= maxSuper or (downArrivedProfit >= arriveStopProfitCount and low <= minSuper) or (bool(sellstopLossPrice) and close > sellstopLossPrice)
+    // closeDown2 = low <= minSuper and minSuper <= lower_6 and close <= lower_5
+    // closeDown3 = downArrivedProfit >= 1 and close > maxSSL
+    if closeDown1 //  or closeDown2 or closeDown3
+        strategy.close('sell', comment=close < strategy.opentrades.entry_price(0) ? '止盈平空' : '止损平空')
+        // 绘制矩形
+        bg=close < entryPrice ? color.new(color.blue, 80) : color.new(color.yellow, 80)
+        top_left=chart.point.from_index(index=entryBarIndex,price=entryPrice)
+        bottom_right=chart.point.from_index(index=bar_index,price=close)
+        box.new(top_left=top_left, bottom_right=bottom_right, border_color=bg, bgcolor=bg)
+        // 重置变量
+        isInitialStopSet := false
+        isTrailingActive := false
+        buytakeProfitPrice := na
+        buytakeProfitPrice2 := na
+        buystopLossPrice := na
+        index := na
+        downArrivedProfit := 0
+        sellstopLossPrice := 0
+        entryBarIndex := bar_index
+    else
+        // down 根据superTrend添加止盈保护
+        if (low <= math.min(up, dn))
+        // if (close <= math.max(up, dn) - math.abs(up - dn)*0.9)
+            downArrivedProfit := downArrivedProfit + 1
+            if (downArrivedProfit == 1)
+                sellstopLossPrice := strategy.opentrades.entry_price(0) - math.abs(low - strategy.opentrades.entry_price(0)) * profitProtectRatio
+        // if (math.min(up, dn) > lower_7)
+        // if (low <= lower_6 and downArrivedProfit >= 1)
+        //     sellstopLossPrice := strategy.opentrades.entry_price(0) - math.abs(low - strategy.opentrades.entry_price(0)) * 0.5
+        // down 根据fib添加止盈保护
+        else if (low <= lower_7 and downArrivedProfit >= 1)
+            sellstopLossPrice := strategy.opentrades.entry_price(0) - math.abs(low - strategy.opentrades.entry_price(0)) * 0.9
+        
+// ========== 持仓状态更新 ==========
+isHoldingPosition := strategy.position_size != 0
+
+
+
+
+
+
+
+
+
+
+
+
+/////////////Nadaraya-Watson Envelope/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// indicator("Nadaraya-Watson Envelope [LuxAlgo]", "LuxAlgo - Nadaraya-Watson Envelope", overlay = true, max_lines_count = 500, max_labels_count = 500, max_bars_back=500)
+
+showNadarayaWatsonEnvelope = input(title='showNadarayaWatsonEnvelope',defval = true)
+h = input.float(8.,'Bandwidth', minval = 0)
+mult2 = input.float(3., minval = 0)
+src2 = input(close, 'Source')
+
+repaint = input(true, 'Repainting Smoothing', tooltip = 'Repainting is an effect where the indicators historical output is subject to change over time. Disabling repainting will cause the indicator to output the endpoints of the calculations')
+
+//Style
+upCss = input.color(color.teal, 'Colors', inline = 'inline1', group = 'Style')
+dnCss = input.color(color.red, '', inline = 'inline1', group = 'Style')
+
+//-----------------------------------------------------------------------------}
+//Functions
+//-----------------------------------------------------------------------------{
+//Gaussian window
+gauss(x, h) => math.exp(-(math.pow(x, 2)/(h * h * 2)))
+
+//-----------------------------------------------------------------------------}
+//Append lines
+//-----------------------------------------------------------------------------{
+n = bar_index
+
+var ln = array.new_line(0) 
+
+if barstate.isfirst and repaint
+    for i = 0 to 499
+        array.push(ln,line.new(na,na,na,na))
+
+//-----------------------------------------------------------------------------}
+//End point method
+//-----------------------------------------------------------------------------{
+var coefs = array.new_float(0)
+var den = 0.
+
+if barstate.isfirst and not repaint
+    for i = 0 to 499
+        w = gauss(i, h)
+        coefs.push(w)
+
+    den := coefs.sum()
+
+out = 0.
+if not repaint
+    for i = 0 to 499
+        out += src2[i] * coefs.get(i)
+out /= den
+mae = ta.sma(math.abs(src2 - out), 499) * mult2
+
+upper = out + mae
+lower = out - mae
+ 
+//-----------------------------------------------------------------------------}
+//Compute and display NWE
+//-----------------------------------------------------------------------------{
+float y2 = na
+float y1 = na
+
+nwe = array.new<float>(0)
+if barstate.islast and repaint
+    sae = 0.
+    //Compute and set NWE point 
+    for i = 0 to math.min(499,n - 1)
+        sum = 0.
+        sumw = 0.
+        //Compute weighted mean 
+        for j = 0 to math.min(499,n - 1)
+            w = gauss(i - j, h)
+            sum += src2[j] * w
+            sumw += w
+
+        y2 := sum / sumw
+        sae += math.abs(src2[i] - y2)
+        nwe.push(y2)
+    
+    sae := sae / math.min(499,n - 1) * mult2
+    for i = 0 to math.min(499,n - 1)
+        if i%2
+            line.new(n-i+1, y1 + sae, n-i, nwe.get(i) + sae, color = upCss)
+            line.new(n-i+1, y1 - sae, n-i, nwe.get(i) - sae, color = dnCss)
+        
+        if src2[i] > nwe.get(i) + sae and src2[i+1] < nwe.get(i) + sae
+            label.new(n-i, src2[i], '▼', color = color(na), style = label.style_label_down, textcolor = dnCss, textalign = text.align_center)
+        if src2[i] < nwe.get(i) - sae and src2[i+1] > nwe.get(i) - sae
+            label.new(n-i, src2[i], '▲', color = color(na), style = label.style_label_up, textcolor = upCss, textalign = text.align_center)
+        
+        y1 := nwe.get(i)
+
+//-----------------------------------------------------------------------------}
+//Dashboard
+//-----------------------------------------------------------------------------{
+var tb = table.new(position.top_right, 1, 1
+  , bgcolor = #1e222d
+  , border_color = #373a46
+  , border_width = 1
+  , frame_color = #373a46
+  , frame_width = 1)
+
+if repaint
+    tb.cell(0, 0, 'Repainting Mode Enabled', text_color = color.white, text_size = size.small)
+
+//-----------------------------------------------------------------------------}
+//Plot
+//-----------------------------------------------------------------------------}
+plot(repaint ? na : out + mae, 'Upper', upCss)
+plot(repaint ? na : out - mae, 'Lower', dnCss)
+
+//Crossing Arrows
+plotshape(ta.crossunder(close, out - mae) ? low : na, "Crossunder", shape.labelup, location.absolute, color(na), 0 , text = '▲', textcolor = upCss, size = size.tiny)
+plotshape(ta.crossover(close, out + mae) ? high : na, "Crossover", shape.labeldown, location.absolute, color(na), 0 , text = '▼', textcolor = dnCss, size = size.tiny)
+
+//-----------------------------------------------------------------------------}
+
+
+
+
+
+
+
+////////////Machine Learning: Lorentzian Classification////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+// indicator('Machine Learning: Lorentzian Classification', 'Lorentzian Classification', true, precision=4, max_labels_count=500) 
+
+import jdehorty/MLExtensions/2 as ml
+import jdehorty/KernelFunctions/2 as kernels
+
+type Settings
+    float source
+    int neighborsCount
+    int maxBarsBack
+    int featureCount
+    int colorCompression
+    bool showExits
+    bool useDynamicExits
+
+type Label
+    int long
+    int short
+    int neutral
+
+type FeatureArrays
+    array<float> f1
+    array<float> f2
+    array<float> f3
+    array<float> f4
+    array<float> f5
+
+type FeatureSeries
+    float f1
+    float f2
+    float f3
+    float f4
+    float f5
+
+type MLModel
+    int firstBarIndex
+    array<int> trainingLabels
+    int loopSize
+    float lastDistance
+    array<float> distancesArray
+    array<int> predictionsArray
+    int prediction
+
+type FilterSettings 
+    bool useVolatilityFilter
+    bool useRegimeFilter
+    bool useAdxFilter
+    float regimeThreshold
+    int adxThreshold
+
+type Filter
+    bool volatility
+    bool regime
+    bool adx 
+
+// ==========================
+// ==== Helper Functions ====
+// ==========================
+
+series_from(feature_string, _close, _high, _low, _hlc3, f_paramA, f_paramB) =>
+    switch feature_string
+        "RSI" => ml.n_rsi(_close, f_paramA, f_paramB)
+        "WT" => ml.n_wt(_hlc3, f_paramA, f_paramB)
+        "CCI" => ml.n_cci(_close, f_paramA, f_paramB)
+        "ADX" => ml.n_adx(_high, _low, _close, f_paramA)
+
+get_lorentzian_distance(int i, int featureCount, FeatureSeries featureSeries, FeatureArrays featureArrays) =>
+    switch featureCount
+        5 => math.log(1+math.abs(featureSeries.f1 - array.get(featureArrays.f1, i))) + 
+             math.log(1+math.abs(featureSeries.f2 - array.get(featureArrays.f2, i))) + 
+             math.log(1+math.abs(featureSeries.f3 - array.get(featureArrays.f3, i))) + 
+             math.log(1+math.abs(featureSeries.f4 - array.get(featureArrays.f4, i))) + 
+             math.log(1+math.abs(featureSeries.f5 - array.get(featureArrays.f5, i)))
+        4 => math.log(1+math.abs(featureSeries.f1 - array.get(featureArrays.f1, i))) +
+             math.log(1+math.abs(featureSeries.f2 - array.get(featureArrays.f2, i))) +
+             math.log(1+math.abs(featureSeries.f3 - array.get(featureArrays.f3, i))) +
+             math.log(1+math.abs(featureSeries.f4 - array.get(featureArrays.f4, i)))
+        3 => math.log(1+math.abs(featureSeries.f1 - array.get(featureArrays.f1, i))) +
+             math.log(1+math.abs(featureSeries.f2 - array.get(featureArrays.f2, i))) +
+             math.log(1+math.abs(featureSeries.f3 - array.get(featureArrays.f3, i)))
+        2 => math.log(1+math.abs(featureSeries.f1 - array.get(featureArrays.f1, i))) +
+             math.log(1+math.abs(featureSeries.f2 - array.get(featureArrays.f2, i)))
+
+// ================  
+// ==== Inputs ==== 
+// ================ 
+
+// Settings Object: General User-Defined Inputs
+Settings settings = 
+ Settings.new(
+   input.source(title='Source', defval=close, group="General Settings", tooltip="Source of the input data"),
+   input.int(title='Neighbors Count', defval=8, group="General Settings", minval=1, maxval=100, step=1, tooltip="Number of neighbors to consider"),
+   input.int(title="Max Bars Back", defval=2000, group="General Settings"),
+   input.int(title="Feature Count", defval=5, group="Feature Engineering", minval=2, maxval=5, tooltip="Number of features to use for ML predictions."),
+   input.int(title="Color Compression", defval=1, group="General Settings", minval=1, maxval=10, tooltip="Compression factor for adjusting the intensity of the color scale."),
+   input.bool(title="Show Default Exits", defval=false, group="General Settings", tooltip="Default exits occur exactly 4 bars after an entry signal. This corresponds to the predefined length of a trade during the model's training process.", inline="exits"),
+   input.bool(title="Use Dynamic Exits", defval=false, group="General Settings", tooltip="Dynamic exits attempt to let profits ride by dynamically adjusting the exit threshold based on kernel regression logic.", inline="exits")
+ )
+   
+// Trade Stats Settings
+// Note: The trade stats section is NOT intended to be used as a replacement for proper backtesting. It is intended to be used for calibration purposes only.
+showTradeStats = input.bool(true, 'Show Trade Stats', tooltip='Displays the trade stats for a given configuration. Useful for optimizing the settings in the Feature Engineering section. This should NOT replace backtesting and should be used for calibration purposes only. Early Signal Flips represent instances where the model changes signals before 4 bars elapses; high values can indicate choppy (ranging) market conditions.', group="General Settings")
+useWorstCase = input.bool(false, "Use Worst Case Estimates", tooltip="Whether to use the worst case scenario for backtesting. This option can be useful for creating a conservative estimate that is based on close prices only, thus avoiding the effects of intrabar repainting. This option assumes that the user does not enter when the signal first appears and instead waits for the bar to close as confirmation. On larger timeframes, this can mean entering after a large move has already occurred. Leaving this option disabled is generally better for those that use this indicator as a source of confluence and prefer estimates that demonstrate discretionary mid-bar entries. Leaving this option enabled may be more consistent with traditional backtesting results.", group="General Settings")
+
+// Settings object for user-defined settings
+FilterSettings filterSettings =
+ FilterSettings.new(
+   input.bool(title="Use Volatility Filter", defval=true, tooltip="Whether to use the volatility filter.", group="Filters"),
+   input.bool(title="Use Regime Filter", defval=true, group="Filters", inline="regime"),
+   input.bool(title="Use ADX Filter", defval=false, group="Filters", inline="adx"),
+   input.float(title="Threshold", defval=-0.1, minval=-10, maxval=10, step=0.1, tooltip="Whether to use the trend detection filter. Threshold for detecting Trending/Ranging markets.", group="Filters", inline="regime"),
+   input.int(title="Threshold", defval=20, minval=0, maxval=100, step=1, tooltip="Whether to use the ADX filter. Threshold for detecting Trending/Ranging markets.", group="Filters", inline="adx")
+ )
+
+// Filter object for filtering the ML predictions
+Filter filter =
+ Filter.new(
+   ml.filter_volatility(1, 10, filterSettings.useVolatilityFilter), 
+   ml.regime_filter(ohlc4, filterSettings.regimeThreshold, filterSettings.useRegimeFilter),
+   ml.filter_adx(settings.source, 14, filterSettings.adxThreshold, filterSettings.useAdxFilter)
+  )
+
+// Feature Variables: User-Defined Inputs for calculating Feature Series. 
+f1_string = input.string(title="Feature 1", options=["RSI", "WT", "CCI", "ADX"], defval="RSI", inline = "01", tooltip="The first feature to use for ML predictions.", group="Feature Engineering")
+f1_paramA = input.int(title="Parameter A", tooltip="The primary parameter of feature 1.", defval=14, inline = "02", group="Feature Engineering")
+f1_paramB = input.int(title="Parameter B", tooltip="The secondary parameter of feature 2 (if applicable).", defval=1, inline = "02", group="Feature Engineering")
+f2_string = input.string(title="Feature 2", options=["RSI", "WT", "CCI", "ADX"], defval="WT", inline = "03", tooltip="The second feature to use for ML predictions.", group="Feature Engineering")
+f2_paramA = input.int(title="Parameter A", tooltip="The primary parameter of feature 2.", defval=10, inline = "04", group="Feature Engineering")
+f2_paramB = input.int(title="Parameter B", tooltip="The secondary parameter of feature 2 (if applicable).", defval=11, inline = "04", group="Feature Engineering")
+f3_string = input.string(title="Feature 3", options=["RSI", "WT", "CCI", "ADX"], defval="CCI", inline = "05", tooltip="The third feature to use for ML predictions.", group="Feature Engineering")
+f3_paramA = input.int(title="Parameter A", tooltip="The primary parameter of feature 3.", defval=20, inline = "06", group="Feature Engineering")
+f3_paramB = input.int(title="Parameter B", tooltip="The secondary parameter of feature 3 (if applicable).", defval=1, inline = "06", group="Feature Engineering")
+f4_string = input.string(title="Feature 4", options=["RSI", "WT", "CCI", "ADX"], defval="ADX", inline = "07", tooltip="The fourth feature to use for ML predictions.", group="Feature Engineering")
+f4_paramA = input.int(title="Parameter A", tooltip="The primary parameter of feature 4.", defval=20, inline = "08", group="Feature Engineering")
+f4_paramB = input.int(title="Parameter B", tooltip="The secondary parameter of feature 4 (if applicable).", defval=2, inline = "08", group="Feature Engineering")
+f5_string = input.string(title="Feature 5", options=["RSI", "WT", "CCI", "ADX"], defval="RSI", inline = "09", tooltip="The fifth feature to use for ML predictions.", group="Feature Engineering")
+f5_paramA = input.int(title="Parameter A", tooltip="The primary parameter of feature 5.", defval=9, inline = "10", group="Feature Engineering")
+f5_paramB = input.int(title="Parameter B", tooltip="The secondary parameter of feature 5 (if applicable).", defval=1, inline = "10", group="Feature Engineering")
+
+// FeatureSeries Object: Calculated Feature Series based on Feature Variables
+featureSeries = 
+ FeatureSeries.new(
+   series_from(f1_string, close, high, low, hlc3, f1_paramA, f1_paramB), // f1
+   series_from(f2_string, close, high, low, hlc3, f2_paramA, f2_paramB), // f2 
+   series_from(f3_string, close, high, low, hlc3, f3_paramA, f3_paramB), // f3
+   series_from(f4_string, close, high, low, hlc3, f4_paramA, f4_paramB), // f4
+   series_from(f5_string, close, high, low, hlc3, f5_paramA, f5_paramB)  // f5
+ )
+
+// FeatureArrays Variables: Storage of Feature Series as Feature Arrays Optimized for ML
+// Note: These arrays cannot be dynamically created within the FeatureArrays Object Initialization and thus must be set-up in advance.
+var f1Array = array.new_float()
+var f2Array = array.new_float()
+var f3Array = array.new_float()
+var f4Array = array.new_float()
+var f5Array = array.new_float()
+array.push(f1Array, featureSeries.f1)
+array.push(f2Array, featureSeries.f2)
+array.push(f3Array, featureSeries.f3)
+array.push(f4Array, featureSeries.f4)
+array.push(f5Array, featureSeries.f5)
+
+// FeatureArrays Object: Storage of the calculated FeatureArrays into a single object
+featureArrays = 
+ FeatureArrays.new(
+  f1Array, // f1
+  f2Array, // f2
+  f3Array, // f3
+  f4Array, // f4
+  f5Array  // f5
+ )
+
+// Label Object: Used for classifying historical data as training data for the ML Model
+Label direction = 
+ Label.new(
+   long=1, 
+   short=-1, 
+   neutral=0
+  )
+
+// Derived from General Settings
+maxBarsBackIndex = last_bar_index >= settings.maxBarsBack ? last_bar_index - settings.maxBarsBack : 0
+
+// EMA Settings 
+useEmaFilter = input.bool(title="Use EMA Filter", defval=false, group="Filters", inline="ema")
+emaPeriod = input.int(title="Period", defval=200, minval=1, step=1, group="Filters", inline="ema", tooltip="The period of the EMA used for the EMA Filter.")
+isEmaUptrend = useEmaFilter ? close > ta.ema(close, emaPeriod) : true
+isEmaDowntrend = useEmaFilter ? close < ta.ema(close, emaPeriod) : true
+useSmaFilter = input.bool(title="Use SMA Filter", defval=false, group="Filters", inline="sma")
+smaPeriod = input.int(title="Period", defval=200, minval=1, step=1, group="Filters", inline="sma", tooltip="The period of the SMA used for the SMA Filter.")
+isSmaUptrend = useSmaFilter ? close > ta.sma(close, smaPeriod) : true
+isSmaDowntrend = useSmaFilter ? close < ta.sma(close, smaPeriod) : true
+
+// Nadaraya-Watson Kernel Regression Settings
+useKernelFilter = input.bool(false, "Trade with Kernel", group="Kernel Settings", inline="kernel")
+showKernelEstimate = input.bool(true, "Show Kernel Estimate", group="Kernel Settings", inline="kernel")
+useKernelSmoothing = input.bool(false, "Enhance Kernel Smoothing", tooltip="Uses a crossover based mechanism to smoothen kernel color changes. This often results in less color transitions overall and may result in more ML entry signals being generated.", inline='1', group='Kernel Settings')
+h2 = input.int(8, 'Lookback Window', minval=3, tooltip='The number of bars used for the estimation. This is a sliding value that represents the most recent historical bars. Recommended range: 3-50', group="Kernel Settings", inline="kernel")
+r = input.float(8., 'Relative Weighting', step=0.25, tooltip='Relative weighting of time frames. As this value approaches zero, the longer time frames will exert more influence on the estimation. As this value approaches infinity, the behavior of the Rational Quadratic Kernel will become identical to the Gaussian kernel. Recommended range: 0.25-25', group="Kernel Settings", inline="kernel")
+x = input.int(25, "Regression Level", tooltip='Bar index on which to start regression. Controls how tightly fit the kernel estimate is to the data. Smaller values are a tighter fit. Larger values are a looser fit. Recommended range: 2-25', group="Kernel Settings", inline="kernel")
+lag = input.int(2, "Lag", tooltip="Lag for crossover detection. Lower values result in earlier crossovers. Recommended range: 1-2", inline='1', group='Kernel Settings')
+
+// Display Settings
+showBarColors = input.bool(false, "Show Bar Colors", tooltip="Whether to show the bar colors.", group="Display Settings")
+showBarPredictions = input.bool(defval = false, title = "Show Bar Prediction Values", tooltip = "Will show the ML model's evaluation of each bar as an integer.", group="Display Settings")
+useAtrOffset = input.bool(defval = false, title = "Use ATR Offset", tooltip = "Will use the ATR offset instead of the bar prediction offset.", group="Display Settings")
+barPredictionsOffset = input.float(0, "Bar Prediction Offset", minval=0, tooltip="The offset of the bar predictions as a percentage from the bar high or close.", group="Display Settings")
+
+// =================================
+// ==== Next Bar Classification ====
+// =================================
+
+// This model specializes specifically in predicting the direction of price action over the course of the next 4 bars. 
+// To avoid complications with the ML model, this value is hardcoded to 4 bars but support for other training lengths may be added in the future.
+src4 = settings.source
+y_train_series = src4[4] < src4[0] ? direction.short : src4[4] > src4[0] ? direction.long : direction.neutral
+var y_train_array = array.new_int(0)
+
+// Variables used for ML Logic
+var predictions = array.new_float(0)
+var prediction = 0.
+var signal = direction.neutral
+var distances = array.new_float(0)
+
+array.push(y_train_array, y_train_series)
+
+lastDistance = -1.0
+size = math.min(settings.maxBarsBack-1, array.size(y_train_array)-1)
+sizeLoop = math.min(settings.maxBarsBack-1, size)
+
+if bar_index >= maxBarsBackIndex //{
+    for i = 0 to sizeLoop //{
+        d = get_lorentzian_distance(i, settings.featureCount, featureSeries, featureArrays) 
+        if d >= lastDistance and i%4 //{
+            lastDistance := d            
+            array.push(distances, d)
+            array.push(predictions, math.round(array.get(y_train_array, i)))
+            if array.size(predictions) > settings.neighborsCount //{
+                lastDistance := array.get(distances, math.round(settings.neighborsCount*3/4))
+                array.shift(distances)
+                array.shift(predictions)
+            //}
+        //}
+    //}
+    prediction := array.sum(predictions)
+//}
+
+// ============================
+// ==== Prediction Filters ====
+// ============================
+
+// User Defined Filters: Used for adjusting the frequency of the ML Model's predictions
+filter_all = filter.volatility and filter.regime and filter.adx
+
+// Filtered Signal: The model's prediction of future price movement direction with user-defined filters applied
+signal := prediction > 0 and filter_all ? direction.long : prediction < 0 and filter_all ? direction.short : nz(signal[1])
+
+// Bar-Count Filters: Represents strict filters based on a pre-defined holding period of 4 bars
+var int barsHeld = 0
+barsHeld := ta.change(signal) ? 0 : barsHeld + 1
+isHeldFourBars = barsHeld == 4
+isHeldLessThanFourBars = 0 < barsHeld and barsHeld < 4
+
+// Fractal Filters: Derived from relative appearances of signals in a given time series fractal/segment with a default length of 4 bars
+isDifferentSignalType = ta.change(signal)
+isEarlySignalFlip = ta.change(signal) and (ta.change(signal[1]) or ta.change(signal[2]) or ta.change(signal[3]))
+isBuySignal = signal == direction.long and isEmaUptrend and isSmaUptrend
+isSellSignal = signal == direction.short and isEmaDowntrend and isSmaDowntrend
+isLastSignalBuy = signal[4] == direction.long and isEmaUptrend[4] and isSmaUptrend[4]
+isLastSignalSell = signal[4] == direction.short and isEmaDowntrend[4] and isSmaDowntrend[4]
+isNewBuySignal = isBuySignal and isDifferentSignalType
+isNewSellSignal = isSellSignal and isDifferentSignalType
+
+// Kernel Regression Filters: Filters based on Nadaraya-Watson Kernel Regression using the Rational Quadratic Kernel
+// For more information on this technique refer to my other open source indicator located here: 
+// https://www.tradingview.com/script/AWNvbPRM-Nadaraya-Watson-Rational-Quadratic-Kernel-Non-Repainting/
+c_green = color.new(#009988, 20)
+c_red = color.new(#CC3311, 20)
+transparent = color.new(#000000, 100)
+yhat1 = kernels.rationalQuadratic(settings.source, h2, r, x)
+yhat2 = kernels.gaussian(settings.source, h2-lag, x)
+kernelEstimate = yhat1
+// Kernel Rates of Change
+bool wasBearishRate = yhat1[2] > yhat1[1]
+bool wasBullishRate = yhat1[2] < yhat1[1]
+bool isBearishRate = yhat1[1] > yhat1
+bool isBullishRate = yhat1[1] < yhat1
+isBearishChange = isBearishRate and wasBullishRate
+isBullishChange = isBullishRate and wasBearishRate
+// Kernel Crossovers
+bool isBullishCrossAlert = ta.crossover(yhat2, yhat1)
+bool isBearishCrossAlert = ta.crossunder(yhat2, yhat1) 
+bool isBullishSmooth = yhat2 >= yhat1
+bool isBearishSmooth = yhat2 <= yhat1
+// Kernel Colors
+color colorByCross = isBullishSmooth ? c_green : c_red
+color colorByRate = isBullishRate ? c_green : c_red
+color plotColor = showKernelEstimate ? (useKernelSmoothing ? colorByCross : colorByRate) : transparent
+// plot(kernelEstimate, color=plotColor, linewidth=2, title="Kernel Regression Estimate")
+// Alert Variables
+bool alertBullish = useKernelSmoothing ? isBullishCrossAlert : isBullishChange
+bool alertBearish = useKernelSmoothing ? isBearishCrossAlert : isBearishChange
+// Bullish and Bearish Filters based on Kernel
+isBullish = useKernelFilter ? (useKernelSmoothing ? isBullishSmooth : isBullishRate) : true
+isBearish = useKernelFilter ? (useKernelSmoothing ? isBearishSmooth : isBearishRate) : true
+
+// ===========================
+// ==== Entries and Exits ====
+// ===========================
+
+// Entry Conditions: Booleans for ML Model Position Entries
+startLongTrade = isNewBuySignal and isBullish and isEmaUptrend and isSmaUptrend
+startShortTrade = isNewSellSignal and isBearish and isEmaDowntrend and isSmaDowntrend
+
+// Dynamic Exit Conditions: Booleans for ML Model Position Exits based on Fractal Filters and Kernel Regression Filters
+lastSignalWasBullish = ta.barssince(startLongTrade) < ta.barssince(startShortTrade)
+lastSignalWasBearish = ta.barssince(startShortTrade) < ta.barssince(startLongTrade)
+barsSinceRedEntry = ta.barssince(startShortTrade)
+barsSinceRedExit = ta.barssince(alertBullish)
+barsSinceGreenEntry = ta.barssince(startLongTrade)
+barsSinceGreenExit = ta.barssince(alertBearish)
+isValidShortExit = barsSinceRedExit > barsSinceRedEntry
+isValidLongExit = barsSinceGreenExit > barsSinceGreenEntry
+endLongTradeDynamic = (isBearishChange and isValidLongExit[1])
+endShortTradeDynamic = (isBullishChange and isValidShortExit[1])
+
+// Fixed Exit Conditions: Booleans for ML Model Position Exits based on a Bar-Count Filters
+endLongTradeStrict = ((isHeldFourBars and isLastSignalBuy) or (isHeldLessThanFourBars and isNewSellSignal and isLastSignalBuy)) and startLongTrade[4]
+endShortTradeStrict = ((isHeldFourBars and isLastSignalSell) or (isHeldLessThanFourBars and isNewBuySignal and isLastSignalSell)) and startShortTrade[4]
+isDynamicExitValid = not useEmaFilter and not useSmaFilter and not useKernelSmoothing
+endLongTrade = settings.useDynamicExits and isDynamicExitValid ? endLongTradeDynamic : endLongTradeStrict 
+endShortTrade = settings.useDynamicExits and isDynamicExitValid ? endShortTradeDynamic : endShortTradeStrict
+
+// =========================
+// ==== Plotting Labels ====
+// =========================
+
+// Note: These will not repaint once the most recent bar has fully closed. By default, signals appear over the last closed bar; to override this behavior set offset=0.
+plotshape(startLongTrade ? low : na, 'Buy', shape.labelup, location.belowbar, color=ml.color_green(prediction), size=size.small, offset=0)
+plotshape(startShortTrade ? high : na, 'Sell', shape.labeldown, location.abovebar, ml.color_red(-prediction), size=size.small, offset=0)
+plotshape(endLongTrade and settings.showExits ? high : na, 'StopBuy', shape.xcross, location.absolute, color=#3AFF17, size=size.tiny, offset=0)
+plotshape(endShortTrade and settings.showExits ? low : na, 'StopSell', shape.xcross, location.absolute, color=#FD1707, size=size.tiny, offset=0)
+
+// ================
+// ==== Alerts ====
+// ================ 
+
+// Separate Alerts for Entries and Exits
+alertcondition(startLongTrade, title='Open Long ▲', message='LDC Open Long ▲ | {{ticker}}@{{close}} | ({{interval}})')
+alertcondition(endLongTrade, title='Close Long ▲', message='LDC Close Long ▲ | {{ticker}}@{{close}} | ({{interval}})')
+alertcondition(startShortTrade, title='Open Short ▼', message='LDC Open Short  | {{ticker}}@{{close}} | ({{interval}})')
+alertcondition(endShortTrade, title='Close Short ▼', message='LDC Close Short ▼ | {{ticker}}@{{close}} | ({{interval}})')
+
+// Combined Alerts for Entries and Exits
+alertcondition(startShortTrade or startLongTrade, title='Open Position ▲▼', message='LDC Open Position ▲▼ | {{ticker}}@{{close}} | ({{interval}})')
+alertcondition(endShortTrade or endLongTrade, title='Close Position ▲▼', message='LDC Close Position  ▲▼ | {{ticker}}@[{{close}}] | ({{interval}})')
+
+// Kernel Estimate Alerts
+alertcondition(condition=alertBullish, title='Kernel Bullish Color Change', message='LDC Kernel Bullish ▲ | {{ticker}}@{{close}} | ({{interval}})')
+alertcondition(condition=alertBearish, title='Kernel Bearish Color Change', message='LDC Kernel Bearish ▼ | {{ticker}}@{{close}} | ({{interval}})')
+
+// =========================
+// ==== Display Signals ==== 
+// =========================
+
+atrSpaced = useAtrOffset ? ta.atr(1) : na
+compressionFactor = settings.neighborsCount / settings.colorCompression
+c_pred = prediction > 0 ? color.from_gradient(prediction, 0, compressionFactor, #787b86, #009988) : prediction <= 0 ? color.from_gradient(prediction, -compressionFactor, 0, #CC3311, #787b86) : na
+c_label = showBarPredictions ? c_pred : na
+c_bars = showBarColors ? color.new(c_pred, 50) : na
+x_val = bar_index
+y_val = useAtrOffset ? prediction > 0 ? high + atrSpaced: low - atrSpaced : prediction > 0 ? high + hl2*barPredictionsOffset/20 : low - hl2*barPredictionsOffset/30
+label.new(x_val, y_val, str.tostring(prediction), xloc.bar_index, yloc.price, color.new(color.white, 100), label.style_label_up, c_label, size.normal, text.align_left)
+barcolor(showBarColors ? color.new(c_pred, 50) : na)
+
+// ===================== 
+// ==== Backtesting ====
+// =====================
+
+// The following can be used to stream signals to a backtest adapter
+backTestStream = switch 
+    startLongTrade => 1
+    endLongTrade => 2
+    startShortTrade => -1
+    endShortTrade => -2
+plot(backTestStream, "Backtest Stream", display=display.none)
+
+// The following can be used to display real-time trade stats. This can be a useful mechanism for obtaining real-time feedback during Feature Engineering. This does NOT replace the need to properly backtest.
+// Note: In this context, a "Stop-Loss" is defined instances where the ML Signal prematurely flips directions before an exit signal can be generated.
+[totalWins, totalLosses, totalEarlySignalFlips, totalTrades, tradeStatsHeader, winLossRatio, winRate] = ml.backtest(high, low, open, startLongTrade, endLongTrade, startShortTrade, endShortTrade, isEarlySignalFlip, maxBarsBackIndex, bar_index, settings.source, useWorstCase)
+
+init_table() =>
+    c_transparent = color.new(color.black, 100)
+    table.new(position.top_right, columns=2, rows=7, frame_color=color.new(color.black, 100), frame_width=1, border_width=1, border_color=c_transparent)
+
+update_table(tbl, tradeStatsHeader, totalTrades, totalWins, totalLosses, winLossRatio, winRate, stopLosses) => 
+    c_transparent = color.new(color.black, 100)
+    table.cell(tbl, 0, 0, tradeStatsHeader, text_halign=text.align_center, text_color=color.gray, text_size=size.normal)
+    table.cell(tbl, 0, 1, 'Winrate', text_halign=text.align_center, bgcolor=c_transparent, text_color=color.gray, text_size=size.normal)
+    table.cell(tbl, 1, 1, str.tostring(totalWins / totalTrades, '#.#%'), text_halign=text.align_center, bgcolor=c_transparent, text_color=color.gray, text_size=size.normal)
+    table.cell(tbl, 0, 2, 'Trades', text_halign=text.align_center, bgcolor=c_transparent, text_color=color.gray, text_size=size.normal)
+    table.cell(tbl, 1, 2, str.tostring(totalTrades, '#') + ' (' + str.tostring(totalWins, '#') + '|' + str.tostring(totalLosses, '#') + ')', text_halign=text.align_center, bgcolor=c_transparent, text_color=color.gray, text_size=size.normal)
+    table.cell(tbl, 0, 5, 'WL Ratio', text_halign=text.align_center, bgcolor=c_transparent, text_color=color.gray, text_size=size.normal)
+    table.cell(tbl, 1, 5, str.tostring(totalWins / totalLosses, '0.00'), text_halign=text.align_center, bgcolor=c_transparent, text_color=color.gray, text_size=size.normal)
+    table.cell(tbl, 0, 6, 'Early Signal Flips', text_halign=text.align_center, bgcolor=c_transparent, text_color=color.gray, text_size=size.normal)
+    table.cell(tbl, 1, 6, str.tostring(totalEarlySignalFlips, '#'), text_halign=text.align_center, bgcolor=c_transparent, text_color=color.gray, text_size=size.normal)
+
+if showTradeStats
+    var tbl = ml.init_table()
+    if barstate.islast
+        update_table(tbl, tradeStatsHeader, totalTrades, totalWins, totalLosses, winLossRatio, winRate, totalEarlySignalFlips)
+
+
+
+
+
+
+/////////////////indicator(shorttitle="BB", title="Bollinger Bands 布林带", overlay=true, timeframe="", timeframe_gaps=true)/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+showBB = input.bool(false, title="show BB")
+bb_length = input.int(20, minval=1, title="Length")
+bb_maType = input.string("SMA", "Basis MA Type", options = ["SMA", "EMA", "SMMA (RMA)", "WMA", "VWMA"])
+bb_src = input(close, title="Source")
+bb_mult = input.float(2.0, minval=0.001, maxval=50, title="StdDev")
+
+bb_ma(source, length, _type) => ta.sma(source, length)
+
+bb_basis = bb_ma(bb_src, bb_length, bb_maType)
+bb_dev = bb_mult * ta.stdev(bb_src, bb_length)
+bb_upper = bb_basis + bb_dev
+bb_lower = bb_basis - bb_dev
+
+bb_offset = input.int(0, "Offset", minval = -500, maxval = 500, display = display.data_window)
+
+plot(showBB ? bb_basis : na, "Basis", color=color.new(color.blue, 0), offset=bb_offset)
+bb_p1 = plot(showBB ? bb_upper : na, "Upper", color=color.new(#5261ff, 0), offset=bb_offset)
+bb_p2 = plot(showBB ? bb_lower : na, "Lower", color=color.new(#4c4caf, 0), offset=bb_offset)
+fill(bb_p1, bb_p2, title="Background", color=color.new(color.blue, 95))
+
+
+
+// ////////////////////////////// indicator("Anchored VWAP (Daily / Weekly / Monthly / Custom)", overlay=true, timeframe="", timeframe_gaps=true)
+
+// ─── 输入 ───
+vwap_anchorMode  = input.string("Daily", "Anchor Mode", options=["Daily", "Weekly", "Monthly", "Custom"])
+vwap_startHour   = input.int(8, "Custom Anchor Hour", minval=0, maxval=23)
+vwap_startMinute = input.int(0, "Custom Anchor Minute", minval=0, maxval=59)
+
+vwap_mult1 = input.float(1.0, "Band Multiplier 1", step=0.1)
+vwap_mult2 = input.float(2.0, "Band Multiplier 2", step=0.1)
+
+vwap_showVwap = input.bool(false, "Show VWAP Indicator")
+
+// ─── 计算 Anchor 时间 ───
+vwap_customAnchor = timestamp("GMT+0", year, month, dayofmonth, vwap_startHour, vwap_startMinute)
+
+// 每个周期的 bar 是否为锚定点
+vwap_isNewDay   = ta.change(time("D"))
+vwap_isNewWeek  = ta.change(time("W"))
+vwap_isNewMonth = ta.change(time("M"))
+
+vwap_isAnchor = switch vwap_anchorMode
+    "Daily"   => vwap_isNewDay
+    "Weekly"  => vwap_isNewWeek
+    "Monthly" => vwap_isNewMonth
+    "Custom"  => time >= vwap_customAnchor and ta.change(time("D"))  // 每天一次自定义锚点
+    => false
+
+// ─── 累积变量 ───
+var float vwap_cumPV = 0.0
+var float vwap_cumVol = 0.0
+var float vwap_cumSQ = 0.0
+var float vwap_val = na
+var float vwap_upper1 = na
+var float vwap_lower1 = na
+var float vwap_upper2 = na
+var float vwap_lower2 = na
+
+// ─── 每次新锚点重置 ───
+if vwap_isAnchor
+    vwap_cumPV := 0
+    vwap_cumVol := 0
+    vwap_cumSQ := 0
+
+// ─── 计算 Anchored VWAP ───
+vwap_typical = hlc3
+vwap_cumPV += vwap_typical * volume
+vwap_cumVol += volume
+vwap_cumSQ += vwap_typical * vwap_typical * volume
+
+vwap_val := vwap_cumVol > 0 ? vwap_cumPV / vwap_cumVol : na
+
+// 标准差
+vwap_mean_sq = vwap_cumVol > 0 ? vwap_cumSQ / vwap_cumVol : na
+vwap_variance = na(vwap_mean_sq) ? na : math.max(vwap_mean_sq - vwap_val * vwap_val, 0)
+vwap_stdev = math.sqrt(vwap_variance)
+
+vwap_upper1 := na(vwap_val) ? na : vwap_val + vwap_mult1 * vwap_stdev
+vwap_lower1 := na(vwap_val) ? na : vwap_val - vwap_mult1 * vwap_stdev
+vwap_upper2 := na(vwap_val) ? na : vwap_val + vwap_mult2 * vwap_stdev
+vwap_lower2 := na(vwap_val) ? na : vwap_val - vwap_mult2 * vwap_stdev
+
+// ─── 绘图 ───
+plot(vwap_showVwap ? vwap_val : na, "Anchored VWAP", color=color.orange, linewidth=2)
+plot(vwap_showVwap ? vwap_upper1 : na, "Upper Band 1", color=color.new(color.red, 0), linewidth=1)
+plot(vwap_showVwap ? vwap_lower1 : na, "Lower Band 1", color=color.new(color.green, 0), linewidth=1)
+plot(vwap_showVwap ? vwap_upper2 : na, "Upper Band 2", color=color.new(color.red, 50), linewidth=1)
+plot(vwap_showVwap ? vwap_lower2 : na, "Lower Band 2", color=color.new(color.green, 50), linewidth=1)
+
+// ========== Swing Highs-Lows & Candle Patterns [LuxAlgo] ==========
+showSwingPatterns = input.bool(title='展示Swing Highs/Lows & Candle Patterns', defval = false, group="Swing Patterns")
+
+swingLength = input.int(21, title="Swing Length", minval=1, group="Swing Patterns")
+
+//Style
+swinghCss = input.color(color.red, 'Swing High', group = 'Swing Patterns')
+swinglCss = input.color(color.teal, 'Swing Low', group = 'Swing Patterns')
+
+//Descriptions
+hammer_desc = "The hammer candlestick pattern is formed of a short body with a long lower wick, and is found at the bottom of a downward trend.\n\nA hammer shows that although there were selling pressures during the day, ultimately a strong buying pressure drove the price back up."
+ihammer_desc = "The inverted hammer is a similar pattern than the hammer pattern. The only difference being that the upper wick is long, while the lower wick is short.\n\nIt indicates a buying pressure, followed by a selling pressure that was not strong enough to drive the market price down. The inverse hammer suggests that buyers will soon have control of the market."
+bulleng_desc = "The bullish engulfing pattern is formed of two candlesticks. The first candle is a short red body that is completely engulfed by a larger green candle\n\nThough the second day opens lower than the first, the bullish market pushes the price up, culminating in an obvious win for buyers"
+hanging_desc = "The hanging man is the bearish equivalent of a hammer; it has the same shape but forms at the end of an uptrend.\nIt indicates that there was a significant sell-off during the day, but that buyers were able to push the price up again. The large sell-off is often seen as an indication that the bulls are losing control of the market."
+shooting_desc = "The shooting star is the same shape as the inverted hammer, but is formed in an uptrend: it has a small lower body, and a long upper wick.\nUsually, the market will gap slightly higher on opening and rally to an intra-day high before closing at a price just above the open – like a star falling to the ground."
+beareng_desc = "A bearish engulfing pattern occurs at the end of an uptrend. The first candle has a small green body that is engulfed by a subsequent long red candle.\nIt signifies a peak or slowdown of price movement, and is a sign of an impending market downturn. The lower the second candle goes, the more significant the trend is likely to be."
+
+//Data
+var float swing_phy = na
+var float swing_ply = na
+
+swing_o = open[swingLength]
+swing_h = high[swingLength]
+swing_l = low[swingLength]
+swing_c = close[swingLength]
+
+swing_d = math.abs(swing_c - swing_o)
+swing_ph = ta.pivothigh(swingLength, swingLength)
+swing_pl = ta.pivotlow(swingLength, swingLength)
+
+//Patterns
+swing_hammer_cond = not na(swing_pl) and math.min(swing_o, swing_c) - swing_l > swing_d and swing_h - math.max(swing_c, swing_o) < swing_d
+swing_ihammer_cond = not na(swing_pl) and swing_h - math.max(swing_o, swing_c) > swing_d and math.min(swing_c, swing_o) - swing_l < swing_d
+swing_bulleng_cond = swing_c > swing_o and swing_c[1] < swing_o[1] and swing_c > swing_o[1] and swing_o < swing_c[1]
+swing_hanging_cond = not na(swing_ph) and math.min(swing_c, swing_o) - swing_l > swing_d and swing_h - math.max(swing_o, swing_c) < swing_d
+swing_shooting_cond = not na(swing_ph) and swing_h - math.max(swing_o, swing_c) > swing_d and math.min(swing_c, swing_o) - swing_l < swing_d
+swing_beareng_cond = swing_c < swing_o and swing_c[1] > swing_o[1] and swing_c < swing_o[1] and swing_o > swing_c[1]  // Bearish Engulfing: current red candle engulfs previous green candle
+
+//Determine pattern
+string swing_pattern_title = swing_hammer_cond ? 'Hammer'
+  : swing_ihammer_cond ? 'Inverted Hammer'
+  : swing_bulleng_cond ? 'Bullish Engulfing'
+  : swing_hanging_cond ? 'Hanging Man'
+  : swing_shooting_cond ? 'Shooting Star'
+  : swing_beareng_cond ? 'Bearish Engulfing'
+  : 'None'
+
+string swing_pattern_desc = swing_hammer_cond ? hammer_desc
+  : swing_ihammer_cond ? ihammer_desc
+  : swing_bulleng_cond ? bulleng_desc
+  : swing_hanging_cond ? hanging_desc
+  : swing_shooting_cond ? shooting_desc
+  : swing_beareng_cond ? beareng_desc
+  : ''
+
+//Set labels
+if showSwingPatterns
+    if not na(swing_ph)
+        swing_H = swing_ph > swing_phy ? 'HH' : 'LH'
+        
+        //Set label
+        label.new(bar_index[swingLength], swing_ph
+          , swing_H + "\n" + swing_pattern_title
+          , color = color(na)
+          , style = label.style_label_down
+          , textcolor = swinghCss
+          , tooltip = swing_pattern_desc)
+        
+        swing_phy := swing_ph
+    
+    else if not na(swing_pl)
+        swing_L = swing_pl < swing_ply ? 'LL' : 'HL'
+        
+        //Set label
+        label.new(bar_index[swingLength], swing_pl
+          , swing_L + "\n" + swing_pattern_title
+          , color = color(na)
+          , style = label.style_label_up
+          , textcolor = swinglCss
+          , tooltip = swing_pattern_desc)
+        
+        swing_ply := swing_pl
+

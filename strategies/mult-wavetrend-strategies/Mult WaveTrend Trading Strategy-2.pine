@@ -1,0 +1,506 @@
+//@version=5
+
+// 这是反转策略，知识和震荡行情
+
+// 找fvg的方法：往过去反推几根k线作为起始k线到当前k线来计算fvg，如果没有就继续往后等待10根k线，其中任何一根k线作为结束k线，若出现5分钟级别fvg并且该fvg是多头fvg（10可配置，默认为0，最大为10）（并且当前k线收盘价 > 该fvg区域的最小值，这个条件加上开关吧）
+//    注意：'当前k线包括后续10根k线'的含义是：指标形成金叉的那根k线作为当前k线，查看当前k线是否形成多头fvg，没有多头fvg的话继续等待下一根k线，查看后续1根k线是否形成多头fvg，没有的话继续等待下一根k线，查看后续第2根k线是否有多头fvg...有的话算检测成功没有的话继续往后查看，直到等待10根k线都还没有多头fvg那就算检测fvg失败
+
+// ====== 做多规则：======
+// 满足以下准备做多的条件：readyBuy = true
+// 1. readyBuy != true and readySell != true
+// 2. p1h1 < -50 and p1h4 < -50
+// 3. p1h1 和 p1h4形成金叉
+
+// 如果readyBuy == true，并且下面任意条件都成立，readyBuy 就为false（失效了）
+// 1. p5m1 > 50 and p15m1 > 50 and p1h1 > 50
+// 3. p15m1 和 p1h1 在40以上死叉
+
+// 满足readyBuy == true，并且当前没有多单仓位，并满足下面任意条件，开多单：
+// 0. (p15m1 和 p1h1 在-25以下形成金叉) or (p15m1 和 p1h4 在-25以下形成金叉) (-25可配置)
+// 1. (p5m1 和 p15m1 在-50以下形成金叉) and 有多头fvg (-50可配置)
+
+// 止损：
+// 最近的摆动低点（HL/LL都可以，否则使用三根k线的最低价作为后备） - 最近21根k线的平均高度
+// 如果最近的摆动低点大于当前开盘价时，止损为：当前收盘价 - 最近21根k线的平均高度 * 3
+
+// 止盈条件：
+// 如果是多单0号条件入场，当 p15m1 和 p1h1 都大于50立即全部平仓
+// 如果是多单1号条件入场，当 p5m1 和 p15m1 都大于50立即全部平仓
+
+// 移动止损：当p5m1大于等于55（55可配置），并且 close > 开仓价格*1.001，止损移动到保本位置（保本位置暂时设置为： 开仓价格*1.001）（止损加一个开关，默认关闭）
+
+// ====== 做空规则：======
+// 满足以下准备做空的条件：readySell = true
+// 1. readyBuy != true and readySell != true
+// 2. p1h1 > 50 and p1h4 > 50
+// 3. p1h1 和 p1h4形成死叉
+
+// 如果readySell == true，并且下面任意条件都成立，readySell 就为false（失效了）
+// 1. p5m1 < -50 and p15m1 < -50 and p1h1 < -50
+// 3. p15m1 和 p1h1 在-40以下金叉
+
+// 满足readySell == true，并且当前没有空单仓位，并满足下面任意条件，开空单：
+// 0. (p15m1 和 p1h1 在25以上形成死叉) or (p15m1 和 p1h4 在25以上形成死叉)(25可配置)
+// 1. (p5m1 和 p15m1 在50以上形成死叉) and 有空头fvg(50可配置)
+
+// 止损：
+// 最近的摆动高点（HH/LH都可以，否则使用三根k线的最高价作为后备）+ 最近21根k线的平均高度
+// 如果最近的摆动高点小于当前开盘价时，止损为：当前收盘价 + 最近21根k线的平均高度 * 3
+
+// 止盈条件：
+// 如果是空单0号条件入场，当 p15m1 和 p1h1 都小于-50立即全部平仓
+// 如果是空单1号条件入场，当 p5m1 和 p15m1 都小于-50立即全部平仓
+
+// 移动止损：当p5m1小于等于-55（-55可配置），并且 close < 开仓价格*0.999，止损移动到保本位置（保本位置暂时设置为： 开仓价格*0.999）（移动止损加一个开关，默认关闭）
+
+
+strategy("Mult WaveTrend Trading Strategy V2", overlay=false, default_qty_type=strategy.percent_of_equity, default_qty_value=100)
+
+// ============================================================================
+// === 基础参数 ===
+// ============================================================================
+n1 = input.int(10, "WT Channel Length")
+n2 = input.int(21, "WT Average Length")
+
+// ============================================================================
+// === 策略开关 ===
+// ============================================================================
+enableLong = input.bool(true, "启用做多策略", tooltip="是否启用做多策略")
+enableShort = input.bool(true, "启用做空策略", tooltip="是否启用做空策略")
+
+// ============================================================================
+// === 仓位管理参数 ===
+// ============================================================================
+enableRiskBasedSizing = input.bool(false, "启用以损定仓", tooltip="开启后按照最大亏损占比计算下单仓位", group="仓位管理")
+riskPerTradePercent = input.float(1.0, "最大亏损占比(%)", minval=0.1, maxval=100, step=0.1, group="仓位管理")
+riskPerTradeFraction = riskPerTradePercent * 0.01
+
+calcRiskBasedQty(entryPrice, stopPrice) =>
+    // 解方程式：(math.abs(开单价格 - 止损价格) / 止损价格) * (开单仓位的数量 * 开单价格) = 单笔风险
+    // 得出：开单仓位的数量 = 单笔风险 * 止损价格 / (开单价格 * math.abs(开单价格 - 止损价格))
+    usableCapital = math.max(strategy.initial_capital, strategy.equity)
+    stopDistance = math.abs(entryPrice - stopPrice)
+    if stopDistance <= 0 or entryPrice <= 0 or stopPrice <= 0 or usableCapital <= 0
+        na
+    else
+        riskAmount = usableCapital * riskPerTradeFraction
+        // 根据方程式计算仓位数量
+        qty = (riskAmount * stopPrice) / (entryPrice * stopDistance)
+        // 限制最大仓位不超过可用资金
+        maxQtyByCapital = usableCapital / entryPrice
+        math.min(qty, maxQtyByCapital)
+
+// ============================================================================
+// === 做多策略参数 ===
+// ============================================================================
+longReadyThreshold = input.int(-50, "做多准备阈值", maxval=0, tooltip="p15m1、p1h1、p1h4都低于该值时可准备做多（默认-50）", group="做多参数")
+longInvalidThreshold = input.int(50, "做多失效阈值1", minval=0, tooltip="p15m1、p1h1、p1h4都超过该值时readyBuy失效（默认50）", group="做多参数")
+longInvalidCrossThreshold = input.int(40, "做多失效死叉阈值", minval=0, tooltip="p15m1和p1h1在该值以上形成死叉时readyBuy失效（默认40）", group="做多参数")
+longEntry0CrossThreshold = input.int(-25, "做多0号金叉阈值", maxval=0, tooltip="0号条件：p15m1/p1h1或p15m1/p1h4金叉必须在该值以下形成（默认-25）", group="做多参数")
+longEntry1CrossThreshold = input.int(-50, "做多1号金叉阈值", maxval=0, tooltip="1号条件：p5m1/p15m1金叉必须在该值以下形成（默认-50）", group="做多参数")
+longProfitThreshold = input.int(50, "做多止盈阈值", minval=0, tooltip="指标超过该值时止盈（默认50）", group="做多参数")
+
+longFvgLookbackBars = input.int(5, "做多FVG回溯K线", minval=3, maxval=20, group="做多参数")
+longFvgWaitBars = input.int(0, "做多FVG等待K线", minval=0, maxval=10, group="做多参数")
+longFvgGapMultiplier = input.int(5, "做多FVG gap倍数", minval=1, maxval=10000, group="做多参数")
+longEnableFvgPriceCheck = input.bool(true, "做多启用FVG价格检查", group="做多参数")
+
+longEnableTrailingStop = input.bool(false, "做多启用移动止损", group="做多参数")
+longTrailingTrigger = input.int(55, "做多移动止损触发阈值", minval=0, group="做多参数")
+longBreakevenFactor = input.float(1.001, "做多保本系数", minval=1.0, step=0.0005, group="做多参数")
+
+longPivotLength = input.int(7, "做多摆动点周期", minval=1, group="做多参数")
+longAvgHeightLength = input.int(21, "做多K线平均高度周期", minval=1, group="做多参数")
+longStopLossMultiplier = input.int(3, "做多后备止损倍数", minval=1, maxval=10, group="做多参数")
+
+// ============================================================================
+// === 做空策略参数 ===
+// ============================================================================
+shortReadyThreshold = input.int(50, "做空准备阈值", minval=0, tooltip="p15m1、p1h1、p1h4都超过该值时可准备做空（默认50）", group="做空参数")
+shortInvalidThreshold = input.int(-50, "做空失效阈值1", maxval=0, tooltip="p15m1、p1h1、p1h4都低于该值时readySell失效（默认-50）", group="做空参数")
+shortInvalidCrossThreshold = input.int(-40, "做空失效金叉阈值", maxval=0, tooltip="p15m1和p1h1在该值以下形成金叉时readySell失效（默认-40）", group="做空参数")
+shortEntry0CrossThreshold = input.int(25, "做空0号死叉阈值", minval=0, tooltip="0号条件：p15m1/p1h1或p15m1/p1h4死叉必须在该值以上形成（默认25）", group="做空参数")
+shortEntry1CrossThreshold = input.int(50, "做空1号死叉阈值", minval=0, tooltip="1号条件：p5m1/p15m1死叉必须在该值以上形成（默认50）", group="做空参数")
+shortProfitThreshold = input.int(-50, "做空止盈阈值", maxval=0, tooltip="指标低于该值时止盈（默认-50）", group="做空参数")
+
+shortFvgLookbackBars = input.int(5, "做空FVG回溯K线", minval=3, maxval=20, group="做空参数")
+shortFvgWaitBars = input.int(0, "做空FVG等待K线", minval=0, maxval=10, group="做空参数")
+shortFvgGapMultiplier = input.int(5, "做空FVG gap倍数", minval=1, maxval=10000, group="做空参数")
+shortEnableFvgPriceCheck = input.bool(true, "做空启用FVG价格检查", group="做空参数")
+
+shortEnableTrailingStop = input.bool(false, "做空启用移动止损", group="做空参数")
+shortTrailingTrigger = input.int(-55, "做空移动止损触发阈值", maxval=0, group="做空参数")
+shortBreakevenFactor = input.float(0.999, "做空保本系数", maxval=1.0, step=0.0005, group="做空参数")
+
+shortPivotLength = input.int(7, "做空摆动点周期", minval=1, group="做空参数")
+shortAvgHeightLength = input.int(21, "做空K线平均高度周期", minval=1, group="做空参数")
+shortStopLossMultiplier = input.int(3, "做空后备止损倍数", minval=1, maxval=10, group="做空参数")
+
+// ============================================================================
+// === 显示参数 ===
+// ============================================================================
+showMTF = input.bool(true, "显示多时间框架WT", inline="mtf")
+show4H  = input.bool(true, "4H", inline="mtf")
+show1H  = input.bool(true, "1H", inline="mtf")
+show15  = input.bool(true, "15m", inline="mtf")
+
+// ============================================================================
+// === WaveTrend 指标计算 ===
+// ============================================================================
+ap = hlc3 
+esa = ta.ema(ap, n1)
+d = ta.ema(math.abs(ap - esa), n1)
+ci = (ap - esa) / (0.015 * d)
+tci = ta.ema(ci, n2)
+wt1 = tci
+
+wt_calc() =>
+    _ap = hlc3
+    _esa = ta.ema(_ap, n1)
+    _d = ta.ema(math.abs(_ap - _esa), n1)
+    _ci = (_ap - _esa) / (0.015 * _d)
+    _tci = ta.ema(_ci, n2)
+    _tci
+
+wt1_4h = request.security(syminfo.tickerid, "240", wt_calc(), lookahead=barmerge.lookahead_off)
+wt1_1h = request.security(syminfo.tickerid, "60",  wt_calc(), lookahead=barmerge.lookahead_off)
+wt1_15 = request.security(syminfo.tickerid, "15",  wt_calc(), lookahead=barmerge.lookahead_off)
+
+p5m1 = wt1
+p15m1 = wt1_15
+p1h1 = wt1_1h
+p1h4 = wt1_4h
+
+// ============================================================================
+// === 金叉/死叉检测函数 ===
+// ============================================================================
+// 金叉：当前 a > b 且前一根 a <= b
+goldenCross(a, b) => a > b and a[1] <= b[1]
+
+// 死叉：当前 a < b 且前一根 a >= b
+deathCross(a, b) => a < b and a[1] >= b[1]
+
+// 在阈值以下形成金叉
+goldenCrossBelow(a, b, threshold) => goldenCross(a, b) and a < threshold and b < threshold
+
+// 在阈值以上形成死叉
+deathCrossAbove(a, b, threshold) => deathCross(a, b) and a > threshold and b > threshold
+
+// ============================================================================
+// === 计算平均K线高度 ===
+// ============================================================================
+avgHeightLength = math.max(longAvgHeightLength, shortAvgHeightLength)
+var float avgCandleHeight = na
+
+if bar_index >= avgHeightLength - 1
+    sumHeight = 0.0
+    for i = 0 to avgHeightLength - 1
+        sumHeight += high[i] - low[i]
+    avgCandleHeight := sumHeight / avgHeightLength
+else if bar_index >= 0
+        sumHeight = 0.0
+        for i = 0 to bar_index
+            sumHeight += high[i] - low[i]
+        avgCandleHeight := sumHeight / (bar_index + 1)
+
+// ============================================================================
+// === FVG检测函数 ===
+// ============================================================================
+detectBullishFVG(offset, _avgCandleHeight, gapMultiplier) =>
+    htfHigh3 = high[2 + offset]
+    htfLow1 = low[offset]
+    isFvgPattern = htfHigh3 < htfLow1
+    fvgGap = htfLow1 - htfHigh3
+    minGapRequired = _avgCandleHeight > 0 ? _avgCandleHeight / gapMultiplier : 0
+    isValid = isFvgPattern and fvgGap > minGapRequired
+    fvgMinPrice = htfLow1
+    [isValid, fvgMinPrice]
+
+detectBearishFVG(offset, _avgCandleHeight, gapMultiplier) =>
+    htfLow3 = low[2 + offset]
+    htfHigh1 = high[offset]
+    isFvgPattern = htfLow3 > htfHigh1
+    fvgGap = htfLow3 - htfHigh1
+    minGapRequired = _avgCandleHeight > 0 ? _avgCandleHeight / gapMultiplier : 0
+    isValid = isFvgPattern and fvgGap > minGapRequired
+    fvgMaxPrice = htfHigh1
+    [isValid, fvgMaxPrice]
+
+// ============================================================================
+// === 状态变量（做多/做空共用） ===
+// ============================================================================
+var bool longReadyBuy = false
+var bool shortReadySell = false
+var int longEntryType = -1    // 0=大级别金叉, 1=小级别金叉+FVG
+var int shortEntryType = -1   // 0=大级别死叉, 1=小级别死叉+FVG
+
+// ============================================================================
+// === 做多策略逻辑 ===
+// ============================================================================
+
+// 摆动低点
+longPl = ta.pivotlow(longPivotLength, longPivotLength)
+var float longLastSwingLow = na
+if not na(longPl)
+    longLastSwingLow := longPl
+
+// === readyBuy 设置条件 ===
+// 1. readyBuy != true and readySell != true
+// 2. p1h1 < -50 and p1h4 < -50
+// 3. p1h1和p1h4形成金叉
+longReadyCondition1 = not longReadyBuy and not shortReadySell
+longReadyCondition2 = p1h1 < longReadyThreshold and p1h4 < longReadyThreshold
+longReadyCondition3 = goldenCross(p1h1, p1h4)
+
+if longReadyCondition1 and longReadyCondition2 and longReadyCondition3
+    longReadyBuy := true
+
+// === readyBuy 失效条件 ===
+// 1. p5m1 > 50 and p15m1 > 50 and p1h1 > 50
+// 3. p15m1和p1h1在40以上死叉
+longInvalidCond1 = p5m1 > longInvalidThreshold and p15m1 > longInvalidThreshold and p1h1 > longInvalidThreshold
+longInvalidCond3 = deathCrossAbove(p15m1, p1h1, longInvalidCrossThreshold)
+
+if longReadyBuy and (longInvalidCond1 or longInvalidCond3)
+    longReadyBuy := false
+
+// === 开仓条件检测 ===
+// 0号条件：(p15m1和p1h1在-25以下形成金叉) or (p15m1和p1h4在-25以下形成金叉)
+longEntry0 = goldenCrossBelow(p15m1, p1h1, longEntry0CrossThreshold) or goldenCrossBelow(p15m1, p1h4, longEntry0CrossThreshold)
+
+// 1号条件：(p5m1和p15m1在-25以下形成金叉) and 有多头FVG
+longEntry1Cross = goldenCrossBelow(p5m1, p15m1, longEntry1CrossThreshold)
+
+// FVG等待窗口
+var bool longFvgWindowActive = false
+var int longFvgWindowStart = na
+var int longFvgLookbackStart = na
+
+if enableLong and longReadyBuy and strategy.position_size == 0 and longEntry1Cross and not longFvgWindowActive
+    longFvgWindowActive := true
+    longFvgWindowStart := bar_index
+    longFvgLookbackStart := bar_index - longFvgLookbackBars
+else if longFvgWindowActive
+    if bar_index - longFvgWindowStart > longFvgWaitBars or not longReadyBuy
+        longFvgWindowActive := false
+        longFvgWindowStart := na
+        longFvgLookbackStart := na
+
+// 检测FVG
+longFvgConfirmed = false
+if longFvgWindowActive and not na(longFvgLookbackStart) and longFvgLookbackStart >= 3
+    maxOffset = bar_index - longFvgLookbackStart
+    maxCheckOffset = math.min(maxOffset, 20)
+    for offset = 0 to math.max(0, maxCheckOffset)
+        [isValid, fvgMinPrice] = detectBullishFVG(offset, avgCandleHeight, longFvgGapMultiplier)
+        priceCheckPassed = not longEnableFvgPriceCheck or close > fvgMinPrice
+        if isValid and priceCheckPassed
+            longFvgConfirmed := true
+            break
+
+longEntry1 = longFvgConfirmed
+
+// 最终开仓条件
+longCondition0 = enableLong and longReadyBuy and strategy.position_size == 0 and longEntry0
+longCondition1 = enableLong and longReadyBuy and strategy.position_size == 0 and longEntry1
+
+// === 止损止盈变量 ===
+var float longEntryPrice = na
+var float longCurrentStopLoss = na
+var float longInitialStopLoss = na
+var bool longMovedToBreakeven = false
+
+// === 开仓执行 ===
+if longCondition0 or longCondition1
+    longEntryPrice := close
+    longLowest3Bars = ta.lowest(low, 3)
+    
+    if not na(longLastSwingLow) and longLastSwingLow < open
+        longCurrentStopLoss := not na(avgCandleHeight) ? longLastSwingLow - avgCandleHeight : longLastSwingLow
+    else
+        longCurrentStopLoss := not na(avgCandleHeight) ? close - avgCandleHeight * longStopLossMultiplier : longLowest3Bars
+    
+    if na(longCurrentStopLoss) or longCurrentStopLoss <= 0
+        longCurrentStopLoss := longLowest3Bars
+    
+    longInitialStopLoss := longCurrentStopLoss
+    longMovedToBreakeven := false
+    longEntryType := longCondition0 ? 0 : 1
+    longFvgWindowActive := false
+    longFvgWindowStart := na
+    longFvgLookbackStart := na
+    
+    longQty = enableRiskBasedSizing ? calcRiskBasedQty(longEntryPrice, longCurrentStopLoss) : na
+    strategy.entry("Long", strategy.long, qty=not na(longQty) ? longQty : na, comment="入场" + str.tostring(longEntryType))
+
+// === 移动止损 ===
+if longEnableTrailingStop and strategy.position_size > 0 and not na(longEntryPrice)
+    if not longMovedToBreakeven and p5m1 >= longTrailingTrigger and close > longEntryPrice * longBreakevenFactor
+        longCurrentStopLoss := longEntryPrice * longBreakevenFactor
+        longMovedToBreakeven := true
+
+// === 止盈条件 ===
+longStopLossTriggered = strategy.position_size > 0 and not na(longCurrentStopLoss) and close <= longCurrentStopLoss
+
+// 根据入场类型选择止盈条件
+longProfitCond0 = longEntryType == 0 and p15m1 > longProfitThreshold and p1h1 > longProfitThreshold
+longProfitCond1 = longEntryType == 1 and p5m1 > longProfitThreshold and p15m1 > longProfitThreshold
+longProfitTarget = strategy.position_size > 0 and not longStopLossTriggered and (longProfitCond0 or longProfitCond1)
+
+if longProfitTarget
+    strategy.close("Long", comment="止盈")
+    longEntryPrice := na
+    longCurrentStopLoss := na
+    longInitialStopLoss := na
+    longMovedToBreakeven := false
+    longEntryType := -1
+
+// === 止损执行 ===
+if strategy.position_size > 0
+    strategy.exit("Long Exit", "Long", stop=longCurrentStopLoss)
+
+// ============================================================================
+// === 做空策略逻辑 ===
+// ============================================================================
+// 摆动高点
+shortPh = ta.pivothigh(shortPivotLength, shortPivotLength)
+var float shortLastSwingHigh = na
+if not na(shortPh)
+    shortLastSwingHigh := shortPh
+
+// === readySell 设置条件 ===
+// 1. readyBuy != true and readySell != true
+// 2. p1h1 > 50 and p1h4 > 50
+// 3. p1h1和p1h4形成死叉
+shortReadyCondition1 = not longReadyBuy and not shortReadySell
+shortReadyCondition2 = p1h1 > shortReadyThreshold and p1h4 > shortReadyThreshold
+shortReadyCondition3 = deathCross(p1h1, p1h4)
+
+if shortReadyCondition1 and shortReadyCondition2 and shortReadyCondition3
+    shortReadySell := true
+
+// === readySell 失效条件 ===
+// 1. p5m1 < -50 and p15m1 < -50 and p1h1 < -50
+// 3. p15m1和p1h1在-40以下金叉
+shortInvalidCond1 = p5m1 < shortInvalidThreshold and p15m1 < shortInvalidThreshold and p1h1 < shortInvalidThreshold
+shortInvalidCond3 = goldenCrossBelow(p15m1, p1h1, shortInvalidCrossThreshold)
+
+if shortReadySell and (shortInvalidCond1 or shortInvalidCond3)
+    shortReadySell := false
+
+// === 开仓条件检测 ===
+// 0号条件：(p15m1和p1h1在25以上形成死叉) or (p15m1和p1h4在25以上形成死叉)
+shortEntry0 = deathCrossAbove(p15m1, p1h1, shortEntry0CrossThreshold) or deathCrossAbove(p15m1, p1h4, shortEntry0CrossThreshold)
+
+// 1号条件：(p5m1和p15m1在25以上形成死叉) and 有空头FVG
+shortEntry1Cross = deathCrossAbove(p5m1, p15m1, shortEntry1CrossThreshold)
+
+// FVG等待窗口
+var bool shortFvgWindowActive = false
+var int shortFvgWindowStart = na
+var int shortFvgLookbackStart = na
+
+if enableShort and shortReadySell and strategy.position_size == 0 and shortEntry1Cross and not shortFvgWindowActive
+    shortFvgWindowActive := true
+    shortFvgWindowStart := bar_index
+    shortFvgLookbackStart := bar_index - shortFvgLookbackBars
+else if shortFvgWindowActive
+    if bar_index - shortFvgWindowStart > shortFvgWaitBars or not shortReadySell
+        shortFvgWindowActive := false
+        shortFvgWindowStart := na
+        shortFvgLookbackStart := na
+
+// 检测FVG
+shortFvgConfirmed = false
+if shortFvgWindowActive and not na(shortFvgLookbackStart) and shortFvgLookbackStart >= 3
+    maxOffset = bar_index - shortFvgLookbackStart
+    maxCheckOffset = math.min(maxOffset, 20)
+    for offset = 0 to math.max(0, maxCheckOffset)
+        [isValid, fvgMaxPrice] = detectBearishFVG(offset, avgCandleHeight, shortFvgGapMultiplier)
+        priceCheckPassed = not shortEnableFvgPriceCheck or close < fvgMaxPrice
+        if isValid and priceCheckPassed
+            shortFvgConfirmed := true
+            break
+
+shortEntry1 = shortFvgConfirmed
+
+// 最终开仓条件
+shortCondition0 = enableShort and shortReadySell and strategy.position_size == 0 and shortEntry0
+shortCondition1 = enableShort and shortReadySell and strategy.position_size == 0 and shortEntry1
+
+// === 止损止盈变量 ===
+var float shortEntryPrice = na
+var float shortCurrentStopLoss = na
+var float shortInitialStopLoss = na
+var bool shortMovedToBreakeven = false
+
+// === 开仓执行 ===
+if shortCondition0 or shortCondition1
+    shortEntryPrice := close
+    shortHighest3Bars = ta.highest(high, 3)
+    
+    if not na(shortLastSwingHigh) and shortLastSwingHigh > open
+        shortCurrentStopLoss := not na(avgCandleHeight) ? shortLastSwingHigh + avgCandleHeight : shortLastSwingHigh
+    else
+        shortCurrentStopLoss := not na(avgCandleHeight) ? close + avgCandleHeight * shortStopLossMultiplier : shortHighest3Bars
+    
+    if na(shortCurrentStopLoss) or shortCurrentStopLoss <= 0
+        shortCurrentStopLoss := shortHighest3Bars
+    
+    shortInitialStopLoss := shortCurrentStopLoss
+    shortMovedToBreakeven := false
+    shortEntryType := shortCondition0 ? 0 : 1
+    shortFvgWindowActive := false
+    shortFvgWindowStart := na
+    shortFvgLookbackStart := na
+    
+    shortQty = enableRiskBasedSizing ? calcRiskBasedQty(shortEntryPrice, shortCurrentStopLoss) : na
+    strategy.entry("Short", strategy.short, qty=not na(shortQty) ? shortQty : na, comment="入场" + str.tostring(shortEntryType))
+
+// === 移动止损 ===
+if shortEnableTrailingStop and strategy.position_size < 0 and not na(shortEntryPrice)
+    if not shortMovedToBreakeven and p5m1 <= shortTrailingTrigger and close < shortEntryPrice * shortBreakevenFactor
+        shortCurrentStopLoss := shortEntryPrice * shortBreakevenFactor
+        shortMovedToBreakeven := true
+
+// === 止损触发检查 ===
+shortStopLossTriggered = strategy.position_size < 0 and not na(shortCurrentStopLoss) and close >= shortCurrentStopLoss
+if shortStopLossTriggered
+    strategy.close("Short", comment="止损")
+    shortEntryPrice := na
+    shortCurrentStopLoss := na
+    shortInitialStopLoss := na
+    shortMovedToBreakeven := false
+    shortEntryType := -1
+
+// === 止盈条件 ===
+shortProfitCond0 = shortEntryType == 0 and p15m1 < shortProfitThreshold and p1h1 < shortProfitThreshold
+shortProfitCond1 = shortEntryType == 1 and p5m1 < shortProfitThreshold and p15m1 < shortProfitThreshold
+shortProfitTarget = strategy.position_size < 0 and not shortStopLossTriggered and (shortProfitCond0 or shortProfitCond1)
+
+if shortProfitTarget
+    strategy.close("Short", comment="止盈")
+    shortEntryPrice := na
+    shortCurrentStopLoss := na
+    shortInitialStopLoss := na
+    shortMovedToBreakeven := false
+    shortEntryType := -1
+
+// === 止损执行 ===
+if strategy.position_size < 0
+    strategy.exit("Short Exit", "Short", stop=shortCurrentStopLoss)
+
+// ============================================================================
+// === 可视化 ===
+// ============================================================================
+plot(wt1, color=color.new(color.aqua, 0), title="WT1 (5m)", linewidth=2)
+plot(showMTF and show4H ? wt1_4h : na, color=color.new(color.red, 0), title="WT1 (4H)", linewidth=2)
+plot(showMTF and show1H ? wt1_1h : na, color=color.new(color.orange, 0), title="WT1 (1H)", linewidth=2)
+plot(showMTF and show15 ? wt1_15 : na, color=color.new(color.yellow, 0), title="WT1 (15m)", linewidth=2)
+
+plot(0, color=color.gray, title="Zero Line")
+plot(50, color=color.red, title="+50")
+plot(-50, color=color.green, title="-50")
+
+bgcolor(longReadyBuy ? color.new(color.green, 90) : na, title="ReadyBuy状态")
+bgcolor(shortReadySell ? color.new(color.red, 90) : na, title="ReadySell状态")

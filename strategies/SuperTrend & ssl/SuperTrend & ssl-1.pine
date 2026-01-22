@@ -1,0 +1,1146 @@
+//@version=5
+strategy('SuperTrend & ssl-1', overlay=true, default_qty_value=100,default_qty_type=strategy.cash, commission_value=0.07, initial_capital=100,  max_lines_count = 500, max_labels_count = 500, max_bars_back=500) // 定义策略名称并显示在价格图表上
+
+// ========== 参数分组（Group 名称） ==========
+group_dema        = 'DEMA Settings'
+group_gmma        = 'GMMA Settings'
+group_supertrend  = 'SuperTrend Settings'
+group_ssl         = 'SSL Settings'
+group_fbb         = 'Fibonacci Bollinger Bands'
+group_wavetrend   = 'WaveTrend Settings'
+group_risk        = 'Risk Management'
+group_adx         = 'ADX Settings'
+group_nwe         = 'Nadaraya-Watson Envelope'
+group_vwap        = 'Anchored VWAP'
+
+// ========== Range Filter - B&S Signals swiming free ==========
+//Range Size Function// ————— Inputs —————
+rng_src = close // input.source(close, "Swing Source", group="Range Filter (Swing)")
+rng_per = 60 // input.int(60, minval=1, step=5, title="Swing Period", group="Range Filter (Swing)")
+rng_qty = 2.5 // input.float(2.5, minval=0.0000001, step=0.1, title="Swing Multiplier", group="Range Filter (Swing)")
+use_barcolor = false // input.bool(false, title="Swing Bar Colors On/Off", group="Range Filter (Swing)")
+
+// ————— Range Size Calculation —————
+rng_size(x, qty, n) =>
+    wper  = (n * 2) - 1
+    avrng = ta.ema(math.abs(x - x[1]), n)
+    AC    = ta.ema(avrng, wper) * qty
+    AC
+
+// ————— Range Filter Function —————
+rng_filt(x, rng_, n) =>
+    r = rng_
+    var rfilt = array.new_float(2, x)
+    array.set(rfilt, 1, array.get(rfilt, 0))
+    if x - r > array.get(rfilt, 1)
+        array.set(rfilt, 0, x - r)
+    if x + r < array.get(rfilt, 1)
+        array.set(rfilt, 0, x + r)
+    rng_filt1 = array.get(rfilt, 0)
+    hi_band = rng_filt1 + r
+    lo_band = rng_filt1 - r
+    [hi_band, lo_band, rng_filt1]
+
+// ————— Compute Range Filter —————
+[h_band, l_band, filt] = rng_filt(rng_src, rng_size(rng_src, rng_qty, rng_per), rng_per)
+
+// ————— Direction Conditions —————
+var float fdir = na
+fdir := filt > filt[1] ? 1 : filt < filt[1] ? -1 : fdir
+upward   = fdir == 1 ? 1 : 0
+downward = fdir == -1 ? 1 : 0
+
+// ————— Trade Conditions —————
+longCond  = (rng_src > filt and rng_src > rng_src[1] and upward > 0) or (rng_src > filt and rng_src < rng_src[1] and upward > 0)
+shortCond = (rng_src < filt and rng_src < rng_src[1] and downward > 0) or (rng_src < filt and rng_src > rng_src[1] and downward > 0)
+
+var int CondIni = 0
+CondIni := longCond ? 1 : shortCond ? -1 : CondIni[1]
+longCondition  = longCond and CondIni[1] == -1
+shortCondition = shortCond and CondIni[1] == 1
+
+// ————— Color Settings —————
+filt_color = bool(upward) ? color.new(#05ff9b, 0) : downward ? color.new(#ff0583, 0) : color.new(#cccccc, 0)
+// bar_color  = upward and rng_src > filt ? (rng_src > rng_src[1] ? color.new(#05ff9b, 85) : color.new(#00b36b, 85)) :
+//              downward and rng_src < filt ? (rng_src < rng_src[1] ? color.new(#ff0583, 85) : color.new(#b8005d, 85)) :
+//              color.new(#cccccc, 90)
+
+// ————— Plots —————
+filt_plot = plot(filt, color=filt_color, linewidth=2, title="Filter")
+
+// h_band_plot = plot(h_band, color=color.new(#05ff9b, 85), title="High Band")
+// l_band_plot = plot(l_band, color=color.new(#ff0583, 85), title="Low Band")
+// fill(h_band_plot, filt_plot, color=color.new(#00b36b, 85), title="High Band Fill")
+// fill(l_band_plot, filt_plot, color=color.new(#b8005d, 85), title="Low Band Fill")
+// barcolor(use_barcolor ? bar_color : na)
+
+// ————— Signal Labels —————
+// plotshape(longCondition, title="Buy Signal", text="BUY", textcolor=color.white, style=shape.labelup, size=size.normal, location=location.belowbar, color=color.new(color.green, 0))
+// plotshape(shortCondition, title="Sell Signal", text="SELL", textcolor=color.white, style=shape.labeldown, size=size.normal, location=location.abovebar, color=color.new(color.red, 0))
+
+// ————— Alerts（可启用） —————
+// alertcondition(longCondition, title="Buy Alert", message="BUY")
+// alertcondition(shortCondition, title="Sell Alert", message="SELL")
+
+
+
+showDema = input.bool(title='展示DEMA', defval = true, group=group_dema)
+
+// ========== 短周期 DEMA (双指数移动平均线) ==========
+var float dema_short = na
+var float dema_log = na
+length_short = input.int(20, minval=1, title='短周期 DEMA 长度', group=group_dema)
+ema_src = input(hl2, title='DEMA数据源', group=group_dema)
+e1 = ta.ema(ema_src, length_short)
+e2 = ta.ema(e1, length_short)
+dema_short := 2 * e1 - e2
+plot(showDema ? dema_short : na, 'DEMA', color=color.rgb(251, 136, 5))
+
+// ========== 长周期 DEMA ==========
+length_log = input.int(144, minval=1, title='长周期 DEMA 长度', group=group_dema)
+e1_log = ta.ema(ema_src, length_log)
+e2_log = ta.ema(e1_log, length_log)
+dema_log := 2 * e1_log - e2_log
+plot(showDema ? dema_log : na, 'DEMA_long', color=color.rgb(251, 136, 5))
+
+plot(showDema ? ta.sma(close, 169) : na, 'DEMA_long', color=color.rgb(245, 245, 248))
+
+// ========== GMMA 参数设置 ==========
+showGMMA = input.bool(title='展示GMMA', defval = false, group=group_gmma)
+
+_Period1 = 3 // input.int(3, "EMA1 Period", minval=1, group=group_gmma)
+_Period2 = 5 // input.int(5, "EMA2 Period", minval=1, group=group_gmma)
+_Period3 = 8 // input.int(8, "EMA3 Period", minval=1, group=group_gmma)
+_Period4 = 10 // input.int(10, "EMA4 Period", minval=1, group=group_gmma)
+_Period5 = 12 // input.int(12, "EMA5 Period", minval=1, group=group_gmma)
+_Period6 = 15 // input.int(15, "EMA6 Period", minval=1, group=group_gmma)
+_Period7 = 30 // input.int(30, "EMA7 Period", minval=1, group=group_gmma)
+_Period8 = 35 // input.int(35, "EMA8 Period", minval=1, group=group_gmma)
+_Period9 = 40 // input.int(40, "EMA9 Period", minval=1, group=group_gmma)
+_Period10 = 45 // input.int(45, "EMA10 Period", minval=1, group=group_gmma)
+_Period11 = 50 // input.int(50, "EMA11 Period", minval=1, group=group_gmma)
+_Period12 = 60 // input.int(60, "EMA12 Period", minval=1, group=group_gmma)
+
+// ========== GMMA 计算 ==========
+ema1 = ta.ema(close, _Period1)
+ema2 = ta.ema(close, _Period2)
+ema3 = ta.ema(close, _Period3)
+ema4 = ta.ema(close, _Period4)
+ema5 = ta.ema(close, _Period5)
+ema6 = ta.ema(close, _Period6)
+ema7 = ta.ema(close, _Period7)
+ema8 = ta.ema(close, _Period8)
+ema9 = ta.ema(close, _Period9)
+ema10 = ta.ema(close, _Period10)
+ema11 = ta.ema(close, _Period11)
+ema12 = ta.ema(close, _Period12)
+
+// ========== GMMA 绘制 ==========
+plot(showGMMA ? ema1 : na, color=color.green, title="short1")
+plot(showGMMA ? ema2 : na, color=color.green, title="short2")
+plot(showGMMA ? ema3 : na, color=color.green, title="short3")
+plot(showGMMA ? ema4 : na, color=color.green, title="short4")
+plot(showGMMA ? ema5 : na, color=color.green, title="short5")
+plot(showGMMA ? ema6 : na, color=color.green, title="short6")
+
+plot(showGMMA ? ema7 : na, color=color.red, title="long1")
+plot(showGMMA ? ema8 : na, color=color.red, title="long2")
+plot(showGMMA ? ema9 : na, color=color.red, title="long3")
+plot(showGMMA ? ema10 : na, color=color.red, title="long4")
+plot(showGMMA ? ema11 : na, color=color.red, title="long5")
+plot(showGMMA ? ema12 : na, color=color.red, title="long6")
+
+// ========== SuperTrend 参数设置 ==========
+Periods = input.int(title='SuperTrend ATR 周期', defval=48, minval=1, group=group_supertrend)
+src = input(hl2, title='SuperTrend数据源', group=group_supertrend)
+Multiplier = input.float(title='SuperTrend ATR 乘数', step=0.1, defval=12, minval=0.1, group=group_supertrend)
+changeATR = input.bool(title='切换 ATR 计算方法？', defval=true, group=group_supertrend)
+showsignals = false // input.bool(title='显示买入/卖出信号？', defval=false, group=group_supertrend)
+highlighting = false // input.bool(title='高亮趋势？', defval=false, group=group_supertrend)
+
+// ========== SSL 相关参数 ==========
+sslRateUp = input.float(title='SSL 斜率阈值 - 多头 (up)', defval=0.00008, step=0.0001, group=group_ssl)
+sslRateDown = input.float(title='SSL 斜率阈值 - 空头 (down)', defval=-0.00006, step=0.0001, group=group_ssl)
+// SSL2 斜率参数（用于 SSL2 入场方式）
+ssl2RateUp = input.float(title='SSL2 斜率阈值 - 多头 (up)', defval=0.0001, step=0.0001, group=group_ssl, tooltip="SSL2 通道斜率阈值，用于 SSL2 入场方式")
+ssl2RateDown = input.float(title='SSL2 斜率阈值 - 空头 (down)', defval=-0.0001, step=0.0001, group=group_ssl, tooltip="SSL2 通道斜率阈值，用于 SSL2 入场方式")
+// SSL 斜率计算周期（用于计算斜率时的回看周期）
+sslSlopeLookback = input.int(title='SSL 斜率计算周期', defval=21, minval=1, step=1, group=group_ssl, tooltip="计算 SSL 斜率时回看的 K 线数量，默认 21")
+// SSL2 斜率计算周期（用于计算斜率时的回看周期）
+ssl2SlopeLookback = input.int(title='SSL2 斜率计算周期', defval=21, minval=1, step=1, group=group_ssl, tooltip="计算 SSL2 斜率时回看的 K 线数量，默认 21")
+
+// ATR 计算
+atr2 = ta.sma(ta.tr, Periods)
+atr = changeATR ? ta.atr(Periods) : atr2
+
+// SuperTrend 计算
+// lowerBand: 上升趋势的下轨（支撑线），当 trend == 1 时使用
+lowerBand = src - Multiplier * atr
+lowerBand1 = nz(lowerBand[1], lowerBand)
+lowerBand := close[1] > lowerBand1 ? math.max(lowerBand, lowerBand1) : lowerBand
+
+// upperBand: 下降趋势的上轨（阻力线），当 trend == -1 时使用
+upperBand = src + Multiplier * atr
+upperBand1 = nz(upperBand[1], upperBand)
+upperBand := close[1] < upperBand1 ? math.min(upperBand, upperBand1) : upperBand
+
+trend = 1
+trend := nz(trend[1], trend)
+trend := (trend == -1 and close > upperBand1) ? 1 : (trend == 1 and close < lowerBand1 ? -1 : trend)
+
+// 绘制趋势线
+upPlot = plot(lowerBand, title='上升趋势', style=plot.style_linebr, linewidth=1, color=trend == 1 ? color.new(#8df978, 60) : color.new(#ff52ff, 60))
+dnPlot = plot(upperBand, title='下降趋势', style=plot.style_linebr, linewidth=1, color=trend == 1 ? color.new(#8df978, 60) : color.new(#ff52ff, 60))
+
+
+
+// ========== SSL 普通图表 ==========
+
+period = 200 // input.int(title="SSL Period", defval=200, minval=1, group=group_ssl)
+len = 200 // input.int(title="SSL WMA Length", defval=200, minval=1, group=group_ssl)
+
+smaHigh = ta.wma(high, len)
+smaLow  = ta.wma(low, len)
+
+var float Hlv = na
+Hlv := close > smaHigh ? 1 : close < smaLow ? -1 : Hlv[1]
+
+sslDown = Hlv < 0 ? smaHigh : smaLow
+sslUp   = Hlv < 0 ? smaLow  : smaHigh
+
+// 画出 SSL 上下轨
+p1 = plot(sslDown, linewidth=1, color=color.new(color.green, 80))
+p2 = plot(sslUp, linewidth=1, color=color.new(color.green, 80))
+
+// 填充区域
+fill(p1, p2, color = Hlv > 0 ? color.new(color.green, 80) : color.new(color.red, 80))
+
+// ========== SSL2 普通图表（period和len为原值的3倍）==========
+period2 = period * 3
+len2 = len * 3
+
+smaHigh2 = ta.wma(high, len2)
+smaLow2  = ta.wma(low, len2)
+
+var float Hlv2 = na
+Hlv2 := close > smaHigh2 ? 1 : close < smaLow2 ? -1 : Hlv2[1]
+
+sslDown2 = Hlv2 < 0 ? smaHigh2 : smaLow2
+sslUp2   = Hlv2 < 0 ? smaLow2  : smaHigh2
+
+// 画出 SSL2 上下轨
+p3 = plot(sslDown2, linewidth=1, color=color.new(color.blue, 80))
+p4 = plot(sslUp2, linewidth=1, color=color.new(color.blue, 80))
+
+// 填充区域
+fill(p3, p4, color = Hlv2 > 0 ? color.new(color.blue, 80) : color.new(color.orange, 80))
+
+// ========== SSL3 普通图表（period和len为原值的12倍）==========
+period3 = period * 12
+len3 = len * 12
+
+smaHigh3 = ta.wma(high, len3)
+smaLow3  = ta.wma(low, len3)
+
+var float Hlv3 = na
+Hlv3 := close > smaHigh3 ? 1 : close < smaLow3 ? -1 : Hlv3[1]
+
+sslDown3 = Hlv3 < 0 ? smaHigh3 : smaLow3
+sslUp3   = Hlv3 < 0 ? smaLow3  : smaHigh3
+
+// 画出 SSL3 上下轨
+p31 = plot(sslDown3, linewidth=1, color=color.new(color.red, 60))
+p32 = plot(sslUp3, linewidth=1, color=color.new(color.red, 60))
+
+// 填充区域
+fill(p31, p32, color = Hlv3 > 0 ? color.new(color.red, 60) : color.new(color.red, 60))
+
+
+// ========== Fibonacci Bollinger Bands ==========
+fbb_length = input.int(200, minval=1, title="fbb_length", group=group_fbb)
+fbb_src = input(hlc3, title="fbb_Source", group=group_fbb)
+mult = input.float(3.0, minval=0.001, maxval=50.0, title="fbb_mult", group=group_fbb)
+
+fbb_basis = ta.vwma(fbb_src, fbb_length)
+fbb_dev = mult * ta.stdev(fbb_src, fbb_length)
+
+upper_3 = fbb_basis + (0.5 * fbb_dev)
+upper_4 = fbb_basis + (0.618 * fbb_dev)
+upper_5 = fbb_basis + (0.764 * fbb_dev)
+upper_6 = fbb_basis + (1.0 * fbb_dev)
+upper_7 = fbb_basis + (1.414 * fbb_dev)
+
+lower_3 = fbb_basis - (0.5 * fbb_dev)
+lower_4 = fbb_basis - (0.618 * fbb_dev)
+lower_5 = fbb_basis - (0.764 * fbb_dev)
+lower_6 = fbb_basis - (1.0 * fbb_dev)
+lower_7 = fbb_basis - (1.414 * fbb_dev)
+
+// 上方线
+// p4_fbb = plot(upper_3, color=color.rgb(255, 255, 255, 80), linewidth=1, title="0.5")
+// p4_618_fbb = plot(upper_4, color=color.rgb(255, 255, 255, 80), linewidth=1, title="0.618")
+// p5_fbb = plot(upper_5, color=color.rgb(255, 255, 255, 80), linewidth=1, title="0.764")
+p6 = plot(upper_6, color=color.rgb(255, 82, 82, 80), linewidth=1, title="1")
+p7 = plot(upper_7, color=color.rgb(255, 82, 82, 80), linewidth=1, title="1.414")
+
+// 下方线
+// p16_fbb = plot(lower_3, color=color.rgb(255, 255, 255, 80), linewidth=1, title="-0.5")
+// p16_618_fbb = plot(lower_4, color=color.rgb(255, 255, 255, 80), linewidth=1, title="-0.618")
+// p17_fbb = plot(lower_5, color=color.rgb(255, 255, 255, 80), linewidth=1, title="-0.764")
+p18 = plot(lower_6, color=color.rgb(76, 175, 79, 80), linewidth=1, title="-1")
+p19 = plot(lower_7, color=color.rgb(76, 175, 79, 80), linewidth=1, title="-1.414")
+
+// ===== 灰色填充区域 =====
+fill(p6, p7, color=color.new(#787b86, 80), title="Upper Gray Fill")
+fill(p18, p19, color=color.new(color.gray, 80), title="Lower Gray Fill")
+
+
+
+
+// ========== WaveTrend Cross ==========
+
+// === 参数 ===
+n1 = 10 // input.int(10, "WT Channel Length", group=group_wavetrend)
+n2 = 21 // input.int(21, "WT Average Length", group=group_wavetrend)
+
+obLevel1 = 60 // input.int(60, "OverBought Level 1 (+60)", group=group_wavetrend)
+obLevel2 = 53 // input.int(53, "OverBought Level 2 (+53)", group=group_wavetrend)
+midLevelHigh = 50 // input.int(50, "看空门槛线 (+50)", group=group_wavetrend)
+midLevelLow = -50 // input.int(-50, "看多门槛线 (-50)", group=group_wavetrend)
+osLevel2 = -53 // input.int(-53, "OverSold Level 2 (-53)", group=group_wavetrend)
+osLevel1 = -60 // input.int(-60, "OverSold Level 1 (-60)", group=group_wavetrend)
+
+// === WaveTrend 指标计算 ===
+ap = hlc3 
+esa = ta.ema(ap, n1)
+d = ta.ema(math.abs(ap - esa), n1)
+ci = (ap - esa) / (0.015 * d)
+tci = ta.ema(ci, n2)
+
+wt1 = tci
+wt2 = ta.sma(wt1, 4)
+
+// === 策略信号 ===
+wtlongSignal  = ta.crossover(wt1, wt2) and wt1 < midLevelLow and wt2 < midLevelLow
+wtShortSignal = ta.crossunder(wt1, wt2) and wt1 > midLevelHigh and wt2 > midLevelHigh
+
+// ========== ADX Indicator ==========
+showADX = input.bool(false, title="显示 ADX 指标", group=group_adx, tooltip="注意：ADX 指标通常显示在单独的窗格中，在 overlay 图表上可能不太清晰")
+adx_len = input.int(14, title="ADX 周期", minval=1, group=group_adx)
+adx_th = input.float(20.0, title="ADX 阈值", minval=0.0, group=group_adx)
+
+// ADX 计算
+TrueRange = math.max(math.max(high - low, math.abs(high - nz(close[1]))), math.abs(low - nz(close[1])))
+DirectionalMovementPlus = high - nz(high[1]) > nz(low[1]) - low ? math.max(high - nz(high[1]), 0) : 0
+DirectionalMovementMinus = nz(low[1]) - low > high - nz(high[1]) ? math.max(nz(low[1]) - low, 0) : 0
+
+var float SmoothedTrueRange = 0.0
+SmoothedTrueRange := nz(SmoothedTrueRange[1]) - (nz(SmoothedTrueRange[1]) / adx_len) + TrueRange
+
+var float SmoothedDirectionalMovementPlus = 0.0
+SmoothedDirectionalMovementPlus := nz(SmoothedDirectionalMovementPlus[1]) - (nz(SmoothedDirectionalMovementPlus[1]) / adx_len) + DirectionalMovementPlus
+
+var float SmoothedDirectionalMovementMinus = 0.0
+SmoothedDirectionalMovementMinus := nz(SmoothedDirectionalMovementMinus[1]) - (nz(SmoothedDirectionalMovementMinus[1]) / adx_len) + DirectionalMovementMinus
+
+DIPlus = SmoothedDirectionalMovementPlus / SmoothedTrueRange * 100
+DIMinus = SmoothedDirectionalMovementMinus / SmoothedTrueRange * 100
+DX = math.abs(DIPlus - DIMinus) / (DIPlus + DIMinus) * 100
+ADX = ta.sma(DX, adx_len)
+
+// 绘制 ADX 指标（仅在启用时显示，注意：在 overlay 图表上可能不太清晰）
+// plot(showADX ? DIPlus : na, color=color.green, title="DI+", linewidth=1)
+// plot(showADX ? DIMinus : na, color=color.red, title="DI-", linewidth=1)
+// plot(showADX ? ADX : na, color=color.navy, title="ADX", linewidth=2)
+// hline(showADX ? adx_th : na, color=color.black, linestyle=hline.style_dashed, title="ADX Threshold")
+
+// ========== Trend Speed Analyzer 指标 ==========
+group_trendSpeed = "Trend Speed Analyzer"
+enableTrendSpeed = input.bool(true, title="启用 Trend Speed Analyzer", group=group_trendSpeed)
+trendSpeedMaxLength = 50 // input.int(50, minval=1, title="Maximum Length", group=group_trendSpeed, tooltip="Maximum Length: This parameter sets the upper limit for the number of bars considered in the dynamic moving average.")
+trendSpeedAccelMultiplier = 5.0 // input.float(5.0, minval=0.0, step=1.1, title="Accelerator Multiplier", group=group_trendSpeed, tooltip="Accelerator Multiplier: Adjusts the responsiveness of the dynamic moving average to price changes.")
+trendSpeedCollectionPeriod = 100 // input.int(100, step=10, minval=5, title="Collection Period", group=group_trendSpeed, tooltip="Collection Period: Defines the number of bars used to normalize trend speed values.")
+enableTrendSpeedCandles = false // input.bool(false, title="Enable Candles", group=group_trendSpeed, tooltip="Enable Candles: When enabled, the candlesticks on the chart will be color-coded based on the calculated trend speed.")
+enableTrendSpeedTable = false // input.bool(false, title="Enable Table", group=group_trendSpeed, tooltip="Enable Table: Activates a statistical table that provides an overview of key metrics.")
+trendSpeedLookbackPeriod = 100 // input.int(100, minval=1, step=1, title="Lookback Period", group=group_trendSpeed, tooltip="Lookback Period: Determines how many historical bars are used for calculating bullish and bearish wave data.")
+trendSpeedUpColor = color.lime // input.color(color.lime, title="Dynamic Trend Up", group=group_trendSpeed, inline="trendColor")
+trendSpeedDnColor = color.red // input.color(color.red, title="", group=group_trendSpeed, inline="trendColor")
+trendSpeedUpHistColor1 = color.new(#82ffc3, 80) // input.color(#82ffc3, title="Trend Speed Up", group=group_trendSpeed, inline="upHist")
+trendSpeedUpHistColor2 = color.lime // input.color(color.lime, title="", group=group_trendSpeed, inline="upHist")
+trendSpeedDnHistColor1 = color.new(color.red, 80) // input.color(color.red, title="Trend Speed Dn", group=group_trendSpeed, inline="dnHist")
+trendSpeedDnHistColor2 = color.new(#f78c8c, 80) // input.color(#f78c8c, title="", group=group_trendSpeed, inline="dnHist")
+
+// Trend Speed Analyzer 计算
+// 全局变量定义（在块外定义以便在入场条件中使用）
+var float speed_ts_global = 0.0
+var float trendspeed_ts_global = na
+var float dyn_ema_ts_global = na
+var color speedGradient1_ts_global = color.gray
+var color colour_ts_global = color.gray
+
+if enableTrendSpeed
+    // Dynamic Average
+    counts_diff = close
+    max_abs_counts_diff = ta.highest(math.abs(counts_diff), 200)
+    counts_diff_norm = (counts_diff + max_abs_counts_diff) / (2 * max_abs_counts_diff)
+    dyn_length = 5 + counts_diff_norm * (trendSpeedMaxLength - 5)
+    
+    // Accelerator Factor
+    delta_counts_diff = math.abs(counts_diff - nz(counts_diff[1]))
+    max_delta_counts_diff = ta.highest(delta_counts_diff, 200)
+    max_delta_counts_diff := max_delta_counts_diff == 0 ? 1 : max_delta_counts_diff
+    accel_factor = delta_counts_diff / max_delta_counts_diff
+    
+    // Adjust alpha
+    alpha_base = 2 / (dyn_length + 1)
+    alpha = math.min(1, alpha_base * (1 + accel_factor * trendSpeedAccelMultiplier))
+    
+    // Compute dynamic EMA
+    var float dyn_ema_ts = na
+    dyn_ema_ts := na(dyn_ema_ts[1]) ? close : alpha * close + (1 - alpha) * dyn_ema_ts[1]
+    
+    // Trend Speed（参考 VolumaticVIDYA-ApirineEMA-Strategy.pine）
+    float trend_ts = dyn_ema_ts
+    bullsrc = close
+    bearsrc = close
+    
+    // Trend Data Arrays (v5 compatible)
+    var array<float> bullish_change = array.new<float>()
+    var array<int> bullish_t = array.new_int()
+    var array<float> bearish_change = array.new<float>()
+    var array<int> bearish_t = array.new_int()
+    
+    var int x1_ts = na
+    var float y1_ts = na
+    var int pos_ts = 0
+    var float speed_ts = 0.0
+    c_ts = ta.rma(close, 10)
+    o_ts = ta.rma(open, 10)
+    
+    // First value
+    if na(x1_ts)
+        x1_ts := bar_index
+        y1_ts := o_ts
+    
+    // Trend direction
+    if bullsrc > trend_ts and bullsrc[1] <= trend_ts
+        // Store bearish wave data
+        if array.size(bearish_change) >= 1000
+            array.shift(bearish_change)
+            array.shift(bearish_t)
+        lowest_speed = bar_index - x1_ts > 0 ? ta.lowest(speed_ts, bar_index - x1_ts) : speed_ts
+        array.unshift(bearish_change, lowest_speed)
+        array.unshift(bearish_t, bar_index - x1_ts)
+        x1_ts := bar_index
+        y1_ts := bullsrc
+        pos_ts := 1
+        speed_ts := c_ts - o_ts
+    
+    if bearsrc < trend_ts and bearsrc[1] >= trend_ts
+        // Store bullish wave data
+        if array.size(bullish_change) >= 1000
+            array.shift(bullish_change)
+            array.shift(bullish_t)
+        highest_speed = bar_index - x1_ts > 0 ? ta.highest(speed_ts, bar_index - x1_ts) : speed_ts
+        array.unshift(bullish_change, highest_speed)
+        array.unshift(bullish_t, bar_index - x1_ts)
+        x1_ts := bar_index
+        y1_ts := bearsrc
+        pos_ts := -1
+        speed_ts := c_ts - o_ts
+    
+    speed_ts := speed_ts + c_ts - o_ts
+    float trendspeed_ts = ta.hma(speed_ts, 5)
+    speed_ts_global := speed_ts  // 更新全局变量
+    
+    // 更新全局变量以便在块外使用
+    trendspeed_ts_global := trendspeed_ts
+    dyn_ema_ts_global := dyn_ema_ts
+    colour_ts_global := ta.wma(close, 2) > dyn_ema_ts ? trendSpeedUpColor : trendSpeedDnColor
+
+// Plot Trend Speed 柱状图已移除，数据保留在 trendspeed_ts_global 中供策略使用
+
+// Plot Dynamic Trend (overlay) - 保留 Dynamic Trend 曲线
+plot(enableTrendSpeed ? dyn_ema_ts_global : na, color=colour_ts_global, linewidth=2, title="Dynamic Trend")
+
+// ========== QQE MOD 指标 ==========
+// === PRIMARY QQE SETTINGS ===
+group_qqe_primary = "Primary QQE Settings"
+qqe_rsiLengthPrimary = 6 // input.int(6, title="RSI Length", group=group_qqe_primary)
+qqe_rsiSmoothingPrimary = 5 // input.int(5, title="RSI Smoothing", group=group_qqe_primary)
+qqe_qqeFactorPrimary = 3.0 // input.float(3.0, title="QQE Factor", group=group_qqe_primary)
+qqe_thresholdPrimary = 3.0 // input.float(3.0, title="Threshold", group=group_qqe_primary)
+qqe_sourcePrimary = close // input.source(close, title="RSI Source", group=group_qqe_primary)
+
+// QQE MOD 开单阈值（绝对值），原来固定为 5 / 15
+qqe_entryThreshold1 = input.float(5.0, title="QQEMOD 开单阈值1 (|值|，默认5)", minval=0.0, step=0.5, group=group_qqe_primary)
+qqe_entryThreshold2 = input.float(15.0, title="QQEMOD 开单阈值2 (|值|，默认15)", minval=0.0, step=0.5, group=group_qqe_primary)
+
+// === SECONDARY QQE SETTINGS ===
+group_qqe_secondary = "Secondary QQE Settings"
+qqe_rsiLengthSecondary = 6 // input.int(6, title="RSI Length", group=group_qqe_secondary)
+qqe_rsiSmoothingSecondary = 5 // input.int(5, title="RSI Smoothing", group=group_qqe_secondary)
+qqe_qqeFactorSecondary = 1.61 // input.float(1.61, title="QQE Factor", group=group_qqe_secondary)
+qqe_thresholdSecondary = 3.0 // input.float(3.0, title="Threshold", group=group_qqe_secondary)
+qqe_sourceSecondary = close // input.source(close, title="RSI Source", group=group_qqe_secondary)
+
+// === BOLLINGER BANDS SETTINGS ===
+group_qqe_bollinger = "Bollinger Bands Settings"
+qqe_bollingerLength = 50 // input.int(50, minval=1, title="Length", group=group_qqe_bollinger, tooltip="The length of the Bollinger Bands calculation.")
+qqe_bollingerMultiplier = 0.35 // input.float(0.35, step=0.1, minval=0.001, maxval=5, title="Multiplier", group=group_qqe_bollinger, tooltip="The multiplier used to calculate Bollinger Band width.")
+
+// === QQE MOD 主计算 ===
+// Calculate Primary QQE
+qqe_primary_wildersLength = qqe_rsiLengthPrimary * 2 - 1
+qqe_primary_rsi = ta.rsi(qqe_sourcePrimary, qqe_rsiLengthPrimary)
+qqe_primary_smoothedRsi = ta.ema(qqe_primary_rsi, qqe_rsiSmoothingPrimary)
+qqe_primary_atrRsi = math.abs(qqe_primary_smoothedRsi[1] - qqe_primary_smoothedRsi)
+qqe_primary_smoothedAtrRsi = ta.ema(qqe_primary_atrRsi, qqe_primary_wildersLength)
+qqe_primary_dynamicAtrRsi = qqe_primary_smoothedAtrRsi * qqe_qqeFactorPrimary
+
+var float qqe_primary_longBand = 0.0
+var float qqe_primary_shortBand = 0.0
+var int qqe_primary_trendDirection = 0
+
+qqe_primary_atrDelta = qqe_primary_dynamicAtrRsi
+qqe_primary_newShortBand = qqe_primary_smoothedRsi + qqe_primary_atrDelta
+qqe_primary_newLongBand = qqe_primary_smoothedRsi - qqe_primary_atrDelta
+qqe_primary_longBand := qqe_primary_smoothedRsi[1] > qqe_primary_longBand[1] and qqe_primary_smoothedRsi > qqe_primary_longBand[1] ? math.max(qqe_primary_longBand[1], qqe_primary_newLongBand) : qqe_primary_newLongBand
+qqe_primary_shortBand := qqe_primary_smoothedRsi[1] < qqe_primary_shortBand[1] and qqe_primary_smoothedRsi < qqe_primary_shortBand[1] ? math.min(qqe_primary_shortBand[1], qqe_primary_newShortBand) : qqe_primary_newShortBand
+qqe_primary_longBandCross = ta.cross(qqe_primary_longBand[1], qqe_primary_smoothedRsi)
+
+if ta.cross(qqe_primary_smoothedRsi, qqe_primary_shortBand[1])
+    qqe_primary_trendDirection := 1
+else if qqe_primary_longBandCross
+    qqe_primary_trendDirection := -1
+else
+    qqe_primary_trendDirection := qqe_primary_trendDirection[1]
+
+primaryQQETrendLine = qqe_primary_trendDirection == 1 ? qqe_primary_longBand : qqe_primary_shortBand
+primaryRSI = qqe_primary_smoothedRsi
+
+// Calculate Secondary QQE
+qqe_secondary_wildersLength = qqe_rsiLengthSecondary * 2 - 1
+qqe_secondary_rsi = ta.rsi(qqe_sourceSecondary, qqe_rsiLengthSecondary)
+qqe_secondary_smoothedRsi = ta.ema(qqe_secondary_rsi, qqe_rsiSmoothingSecondary)
+qqe_secondary_atrRsi = math.abs(qqe_secondary_smoothedRsi[1] - qqe_secondary_smoothedRsi)
+qqe_secondary_smoothedAtrRsi = ta.ema(qqe_secondary_atrRsi, qqe_secondary_wildersLength)
+qqe_secondary_dynamicAtrRsi = qqe_secondary_smoothedAtrRsi * qqe_qqeFactorSecondary
+
+var float qqe_secondary_longBand = 0.0
+var float qqe_secondary_shortBand = 0.0
+var int qqe_secondary_trendDirection = 0
+
+qqe_secondary_atrDelta = qqe_secondary_dynamicAtrRsi
+qqe_secondary_newShortBand = qqe_secondary_smoothedRsi + qqe_secondary_atrDelta
+qqe_secondary_newLongBand = qqe_secondary_smoothedRsi - qqe_secondary_atrDelta
+qqe_secondary_longBand := qqe_secondary_smoothedRsi[1] > qqe_secondary_longBand[1] and qqe_secondary_smoothedRsi > qqe_secondary_longBand[1] ? math.max(qqe_secondary_longBand[1], qqe_secondary_newLongBand) : qqe_secondary_newLongBand
+qqe_secondary_shortBand := qqe_secondary_smoothedRsi[1] < qqe_secondary_shortBand[1] and qqe_secondary_smoothedRsi < qqe_secondary_shortBand[1] ? math.min(qqe_secondary_shortBand[1], qqe_secondary_newShortBand) : qqe_secondary_newShortBand
+qqe_secondary_longBandCross = ta.cross(qqe_secondary_longBand[1], qqe_secondary_smoothedRsi)
+
+if ta.cross(qqe_secondary_smoothedRsi, qqe_secondary_shortBand[1])
+    qqe_secondary_trendDirection := 1
+else if qqe_secondary_longBandCross
+    qqe_secondary_trendDirection := -1
+else
+    qqe_secondary_trendDirection := qqe_secondary_trendDirection[1]
+
+secondaryQQETrendLine = qqe_secondary_trendDirection == 1 ? qqe_secondary_longBand : qqe_secondary_shortBand
+secondaryRSI = qqe_secondary_smoothedRsi
+
+// Calculate Bollinger Bands for the Primary QQE Trend Line
+qqe_bollingerBasis = ta.sma(primaryQQETrendLine - 50, qqe_bollingerLength)
+qqe_bollingerDeviation = qqe_bollingerMultiplier * ta.stdev(primaryQQETrendLine - 50, qqe_bollingerLength)
+qqe_bollingerUpper = qqe_bollingerBasis + qqe_bollingerDeviation
+qqe_bollingerLower = qqe_bollingerBasis - qqe_bollingerDeviation
+
+// QQE MOD柱子值（secondaryRSI - 50）
+float qqeModBar = secondaryRSI - 50
+// QQE MOD颜色判断（绿色>threshold，红色<-threshold）
+bool qqeModGreen = qqeModBar > qqe_thresholdSecondary
+bool qqeModRed = qqeModBar < -qqe_thresholdSecondary
+
+// ========== Swing Length 参数（提前定义供前高点和前低点使用）==========
+swingLength = input.int(21, title="Swing Length", minval=1, group="Swing Patterns")
+
+// ========== 前高点和前低点计算 ==========
+pivotHighValue = ta.pivothigh(high, swingLength, swingLength)
+pivotLowValue = ta.pivotlow(low, swingLength, swingLength)
+var float preHigh = na  // 前高点
+var float preLow = na   // 前低点
+
+// 更新前高点
+if not na(pivotHighValue)
+    preHigh := pivotHighValue
+
+// 更新前低点
+if not na(pivotLowValue)
+    preLow := pivotLowValue
+
+// ========== 开仓逻辑 ==========
+var bool isHoldingPosition = false // 是否持有仓位
+var int buySignalBar = na // 记录看多信号的 K 线位置
+var int sellSignalBar = na // 记录看空信号的 K 线位置
+var float entryPrice = na
+var int entryBarIndex = na
+var float initialLongStopLoss = na  // 开仓时的初始止损位
+var float initialShortStopLoss = na  // 开仓时的初始止损位
+
+// 开单所需变量
+maxSSL = math.max(sslUp, sslDown)
+minSSL = math.min(sslUp, sslDown)
+maxSSL2 = math.max(sslUp2, sslDown2)
+minSSL2 = math.min(sslUp2, sslDown2)
+section3PositionUp = false
+section3PositionDown = false
+// var float addQulityPrice = 0 // 可能需要,但是tradingview不支持
+
+// QQE MOD 拐头判断（参考VolumaticVIDYA策略）
+// qqeModBar值处理（避免na值）
+float qqeModBar0 = na(qqeModBar) ? 0.0 : qqeModBar
+float qqeModBar1 = na(qqeModBar[1]) ? 0.0 : qqeModBar[1]
+float qqeModBar2 = na(qqeModBar[2]) ? 0.0 : qqeModBar[2]
+
+// 做多条件：最近三根K线 qqe柱子是红色 and 拐头向上 and 最近三个qqe柱子的最小值 < -5
+// 最近三根K线都是红色
+bool qqe_threeBarsRed = qqeModRed and qqeModRed[1] and qqeModRed[2]
+// 最近三根K线拐头向上：qqeModBar[2] > qqeModBar[1] < qqeModBar[0]（先下降后上升）
+bool qqe_turnUp = qqeModBar2 > qqeModBar1 and qqeModBar1 < qqeModBar0
+// 最近三个qqe柱子的最小值 < -阈值1（原来固定 -5）
+bool qqe_minBelowTh1 = math.min(qqeModBar0, qqeModBar1, qqeModBar2) < -qqe_entryThreshold1
+// 做多QQE条件（QQEMOD入场）
+bool qqe_longCondition = qqe_threeBarsRed and qqe_turnUp and qqe_minBelowTh1
+
+// 最近三个qqe柱子的最小值 < -阈值2（原来固定 -15，用于SSL2入场）
+bool qqe_minBelowTh2 = math.min(qqeModBar0, qqeModBar1, qqeModBar2) < -qqe_entryThreshold2
+// 做多QQE条件（SSL2入场）
+bool qqe_longConditionSSL2 = qqe_threeBarsRed and qqe_turnUp and qqe_minBelowTh2
+
+// 做多QQE条件（TrendSpeed入场）：最小值 < 0
+bool qqe_minBelow0 = math.min(qqeModBar0, qqeModBar1, qqeModBar2) < 0.0
+bool qqe_longConditionTS = qqe_threeBarsRed and qqe_turnUp and qqe_minBelow0
+
+// 做空条件：最近三根K线 qqe柱子是绿色 and 拐头向下 and 最近三个qqe柱子的最大值 > 5
+// 最近三根K线都是绿色
+bool qqe_threeBarsGreen = qqeModGreen and qqeModGreen[1] and qqeModGreen[2]
+// 最近三根K线拐头向下：qqeModBar[2] < qqeModBar[1] > qqeModBar[0]（先上升后下降）
+bool qqe_turnDown = qqeModBar2 < qqeModBar1 and qqeModBar1 > qqeModBar0
+// 最近三个qqe柱子的最大值 > 阈值1（原来固定 5）
+bool qqe_maxAboveTh1 = math.max(qqeModBar0, qqeModBar1, qqeModBar2) > qqe_entryThreshold1
+// 做空QQE条件（QQEMOD入场）
+bool qqe_shortCondition = qqe_threeBarsGreen and qqe_turnDown and qqe_maxAboveTh1
+
+// 最近三个qqe柱子的最大值 > 阈值2（原来固定 15，用于SSL2入场）
+bool qqe_maxAboveTh2 = math.max(qqeModBar0, qqeModBar1, qqeModBar2) > qqe_entryThreshold2
+// 做空QQE条件（SSL2入场）
+bool qqe_shortConditionSSL2 = qqe_threeBarsGreen and qqe_turnDown and qqe_maxAboveTh2
+
+// 做空QQE条件（TrendSpeed入场）：最大值 > 0
+bool qqe_maxAbove0 = math.max(qqeModBar0, qqeModBar1, qqeModBar2) > 0.0
+bool qqe_shortConditionTS = qqe_threeBarsGreen and qqe_turnDown and qqe_maxAbove0
+
+// TrendSpeed dyn_ema 颜色判断（仅在启用时计算）
+bool trendSpeed_threeBarsRed = false
+bool trendSpeed_threeBarsGreen = false
+bool trendSpeed_currentGreen = false
+bool trendSpeed_currentRed = false
+if enableTrendSpeed
+    // dyn_ema线颜色判断：使用 ta.wma(close, 2) > dyn_ema_ts_global（与原指标一致：colour = ta.wma(close, 2) > dyn_ema ? up_col : dn_col）
+    bool dynEmaGreen_current = ta.wma(close, 2) > dyn_ema_ts_global
+    // 前三个bar为红色（dyn_ema线为红色，即 ta.wma(close, 2) <= dyn_ema）
+    trendSpeed_threeBarsRed = not dynEmaGreen_current[1] and not dynEmaGreen_current[2] and not dynEmaGreen_current[3]
+    // 当前柱子为绿色（dyn_ema线为绿色，即 ta.wma(close, 2) > dyn_ema）
+    trendSpeed_currentGreen = dynEmaGreen_current
+    // 前三个bar为绿色（dyn_ema线为绿色）
+    trendSpeed_threeBarsGreen = dynEmaGreen_current[1] and dynEmaGreen_current[2] and dynEmaGreen_current[3]
+    // 当前柱子为红色（dyn_ema线为红色）
+    trendSpeed_currentRed = not dynEmaGreen_current
+
+// 看多信号
+// section3Up1：SSL入场 - 所有条件都要满足（基于SSL通道）
+// SSL斜率条件：maxSSL相对于指定周期前的WMA值的上涨幅度 > sslRateUp
+float section3Up1_wma2 = math.max(smaHigh[sslSlopeLookback], smaLow[sslSlopeLookback])
+float section3Up1_slopeValue = (maxSSL - section3Up1_wma2) / section3Up1_wma2
+bool section3Up1_sslSlope = section3Up1_slopeValue > sslRateUp
+bool section3Up1 = maxSSL > minSSL2 and trend == 1 and qqe_longCondition and close > maxSSL and minSSL > minSSL2 and maxSSL > maxSSL2 and math.min(low, low[1]) <= maxSSL and section3Up1_sslSlope
+
+// section3Up2：SSL2入场 - 所有条件都要满足（基于SSL2通道）
+// SSL2斜率条件：maxSSL2相对于指定周期前的WMA值的上涨幅度 > ssl2RateUp
+float section3Up2_wma2 = math.max(smaHigh2[ssl2SlopeLookback], smaLow2[ssl2SlopeLookback])
+bool section3Up2_ssl2Slope = (maxSSL2 - section3Up2_wma2) / section3Up2_wma2 > ssl2RateUp
+bool section3Up2 = maxSSL > minSSL2 and trend == 1 and qqe_longConditionSSL2 and close > maxSSL2 and minSSL > minSSL2 and maxSSL > maxSSL2 and math.min(low, low[1]) <= maxSSL2 and section3Up2_ssl2Slope
+
+// 综合做多条件：section3Up = (section3Up1 or section3Up2)（斜率条件已包含在各自条件中）
+section3Up = section3Up1 or section3Up2
+buySignal = (section3Up)
+if buySignal
+    buySignalBar := bar_index // 记录看多信号的 K 线位置
+    if section3Up
+        section3PositionUp := true
+
+// 看空信号
+// section3Down1：SSL入场 - 所有条件都要满足（基于SSL通道）
+// SSL斜率条件：maxSSL相对于指定周期前的WMA值的下跌幅度 < sslRateDown
+float section3Down1_wma2 = math.max(smaHigh[sslSlopeLookback], smaLow[sslSlopeLookback])
+float section3Down1_slopeValue = (maxSSL - section3Down1_wma2) / section3Down1_wma2
+bool section3Down1_sslSlope = section3Down1_slopeValue < sslRateDown
+bool section3Down1 = minSSL < maxSSL2 and trend == -1 and qqe_shortCondition and close < minSSL and minSSL < minSSL2 and maxSSL < maxSSL2 and math.max(high, high[1]) >= minSSL and section3Down1_sslSlope
+
+// section3Down2：SSL2入场 - 所有条件都要满足（基于SSL2通道）
+// SSL2斜率条件：maxSSL2相对于指定周期前的WMA值的下跌幅度 < ssl2RateDown
+float section3Down2_wma2 = math.max(smaHigh2[ssl2SlopeLookback], smaLow2[ssl2SlopeLookback])
+bool section3Down2_ssl2Slope = (maxSSL2 - section3Down2_wma2) / section3Down2_wma2 < ssl2RateDown
+bool section3Down2 = minSSL < maxSSL2 and trend == -1 and qqe_shortConditionSSL2 and close < minSSL2 and minSSL < minSSL2 and maxSSL < maxSSL2 and math.max(high, high[1]) >= minSSL2 and section3Down2_ssl2Slope
+
+// 综合做空条件：section3Down = (section3Down1 or section3Down2)（斜率条件已包含在各自条件中）
+section3Down = section3Down1 or section3Down2
+sellSignal = (section3Down)
+if sellSignal
+    sellSignalBar := bar_index // 记录看空信号的 K 线位置
+    if section3Down
+        section3PositionDown := true
+
+// 移动止损相关全局变量（需在首次使用前声明）
+var float longTrailStop = na
+var bool longTrailActive = false
+var float shortTrailStop = na
+var bool shortTrailActive = false
+
+// ========== 止盈止损逻辑（提前定义供开仓时使用）==========
+maxSuper = math.max(lowerBand, upperBand)
+minSuper = math.min(lowerBand, upperBand)
+
+if (not isHoldingPosition)
+    // 开多仓条件
+    if (section3Up) //  and longCond
+        // 根据是否为 SSL2 入场，写入不同的注释，方便在回测订单列表中区分
+        string longEntryComment = section3Up2 ? '多_SSL2' : '多'
+        strategy.entry('buy', strategy.long, comment=longEntryComment)
+        // 使用 log 日志记录入场信息，便于在 Pine Logs 中查看是否为 SSL2 入场
+        string longLogMsg = 'LONG entry - ' + (section3Up2 ? 'SSL2' : 'SSL') + ' | bar_index=' + str.tostring(bar_index) + ' | price=' + str.tostring(close)
+        log.info(longLogMsg)
+        buySignalBar := na // 开仓后移除看多信号
+        entryPrice := close
+        entryBarIndex := bar_index
+        // 保存开仓时的初始止损位
+        initialLongStopLoss := minSuper
+        // 重置移动止损状态（多空共用）
+        longTrailActive := false
+        longTrailStop := na
+        shortTrailActive := false
+        shortTrailStop := na
+
+    // 开空仓条件
+    if (section3Down) //  and shortCond
+        // 根据是否为 SSL2 入场，写入不同的注释，方便在回测订单列表中区分
+        string shortEntryComment = section3Down2 ? '空_SSL2' : '空'
+        strategy.entry('sell', strategy.short, comment=shortEntryComment)
+        // 使用 log 日志记录入场信息，便于在 Pine Logs 中查看是否为 SSL2 入场
+        string shortLogMsg = 'SHORT entry - ' + (section3Down2 ? 'SSL2' : 'SSL') + ' | bar_index=' + str.tostring(bar_index) + ' | price=' + str.tostring(close)
+        log.info(shortLogMsg)
+        sellSignalBar := na // 开仓后移除看空信号
+        entryPrice := close
+        entryBarIndex := bar_index
+        // 保存开仓时的初始止损位
+        initialShortStopLoss := maxSuper
+        // 重置移动止损状态（多空共用）
+        longTrailActive := false
+        longTrailStop := na
+        shortTrailActive := false
+        shortTrailStop := na
+
+// ========== 止盈止损参数 ==========
+riskRewardRatio = input.float(3.0, title="固定止盈倍数", minval=0.1, step=0.1, tooltip="固定止盈的盈亏比，默认3.0（1:3）", group=group_risk)
+enableTrailingStop = input.bool(false, title="启用移动止损", group=group_risk, tooltip="移动止损默认关闭，多空共用此开关")
+trailingThresholdLong = input.float(0.005, title="做多移动止损触发阈值 (收益比例)", minval=0.0, step=0.0005, group=group_risk, tooltip="例如0.005代表0.5%的浮动盈利时开始启动移动止损")
+trailingThresholdShort = input.float(0.005, title="做空移动止损触发阈值 (收益比例)", minval=0.0, step=0.0005, group=group_risk, tooltip="例如0.005代表0.5%的浮动盈利时开始启动移动止损")
+qqeTrailingThresholdLong = input.float(30.0, title="做多移动止损 QQE 柱子值阈值", minval=0.0, step=1.0, group=group_risk, tooltip="QQE柱子值 > 此值时触发移动止损，默认30")
+qqeTrailingThresholdShort = input.float(-30.0, title="做空移动止损 QQE 柱子值阈值", maxval=0.0, step=1.0, group=group_risk, tooltip="QQE柱子值 < 此值时触发移动止损，默认-30")
+enableSupertrendTakeProfit = input.bool(false, title="启用 SuperTrend 指标止盈", group=group_risk, tooltip="勾选后，价格触及 SuperTrend 上下轨时也会作为止盈条件")
+enableFibonacciTakeProfit = input.bool(false, title="启用 Fibonacci 指标止盈", group=group_risk, tooltip="勾选后，价格触及 Fibonacci 布林带上下轨时也会作为止盈条件")
+
+// ========== 止盈止损逻辑 ==========
+// maxSuper 和 minSuper 已在开仓逻辑之前定义
+
+// ========== 做多止损止盈逻辑 ==========
+if strategy.position_size > 0
+    // 计算止损位：使用SuperTrend下轨为限价止损位（动态更新）
+    float longStopLoss = minSuper
+    
+    // 计算固定止盈位：1:3 盈亏比（可配置），使用开仓时的初始止损位
+    float longTakeProfit = entryPrice + (entryPrice - initialLongStopLoss) * riskRewardRatio
+    
+    // ===== 移动止损（做多）======
+    float effectiveLongStop = longStopLoss
+    if enableTrailingStop and not na(entryPrice)
+        float longProfitRatio = (close - entryPrice) / entryPrice
+        // 触发条件1：浮盈超过阈值时启动移动止损
+        bool trigger1 = longProfitRatio > trailingThresholdLong
+        // 触发条件2：QQE柱子值 > 阈值时启动移动止损
+        bool trigger2 = qqeModBar > qqeTrailingThresholdLong
+        // 第一次触发：满足任一条件时启动移动止损
+        if not longTrailActive and (trigger1 or trigger2)
+            longTrailActive := true
+            longTrailStop := math.max(longStopLoss, nz(preLow, longStopLoss), minSSL)
+        // 已经启动后，持续抬高止损价：max(原止损价, 前低点, minSSL)
+        if longTrailActive
+            longTrailStop := math.max(longTrailStop, nz(preLow, longTrailStop), minSSL)
+            effectiveLongStop := math.max(longStopLoss, longTrailStop)
+        else
+            effectiveLongStop := longStopLoss
+    else
+        effectiveLongStop := longStopLoss
+    
+    // 止损条件：达到任何位置都可以止损
+    // close < 当前SuperTrend下轨立即平仓
+    bool longStopLossHit = close < effectiveLongStop or low < effectiveLongStop
+    
+    // 止盈条件：达到任何位置都可以止盈
+    // 1. 固定止盈 1:3
+    bool longTakeProfit1 = close >= longTakeProfit or high >= longTakeProfit
+    // 2. 指标止盈：close > SuperTrend上轨（可选）
+    bool longTakeProfit2 = enableSupertrendTakeProfit and (close > maxSuper or high > maxSuper)
+    // 3. 指标止盈：close > Fibonacci上轨（可选）
+    bool longTakeProfit3 = enableFibonacciTakeProfit and (close > upper_7 or high > upper_7)
+    
+    // 平仓条件
+    if longStopLossHit or longTakeProfit1 or longTakeProfit2 or longTakeProfit3
+        // 根据 close 和 entryPrice 的关系判断止盈/止损
+        string closeComment = close > entryPrice ? '止盈平多' : '止损平多'
+        strategy.close('buy', comment=closeComment)
+        // 平仓后重置移动止损状态
+        longTrailActive := false
+        longTrailStop := na
+        // 绘制白色框标记（使用初始止损位）
+        // 上边框：实际止盈位（longTakeProfit），下边框：初始止损位（initialLongStopLoss）
+        if not na(entryPrice) and not na(initialLongStopLoss) and not na(longTakeProfit)
+            box.new(entryBarIndex, longTakeProfit, bar_index, initialLongStopLoss, border_color=color.new(color.white, 0), border_width=1, bgcolor=color.new(color.white, 90), extend=extend.none)
+        entryBarIndex := bar_index
+    
+// ========== 做空止损止盈逻辑 ==========
+if strategy.position_size < 0
+    // 计算止损位：使用当前SuperTrend上轨为限价止损位（动态更新）
+    float shortStopLoss = maxSuper
+    
+    // 计算固定止盈位：1:3 盈亏比（可配置），使用开仓时的初始止损位
+    float shortTakeProfit = entryPrice - (initialShortStopLoss - entryPrice) * riskRewardRatio
+    
+    // ===== 移动止损（做空）======
+    float effectiveShortStop = shortStopLoss
+    if enableTrailingStop and not na(entryPrice)
+        float shortProfitRatio = (entryPrice - close) / entryPrice
+        // 触发条件1：浮盈超过阈值时启动移动止损
+        bool trigger1 = shortProfitRatio > trailingThresholdShort
+        // 触发条件2：QQE柱子值 < 阈值时启动移动止损
+        bool trigger2 = qqeModBar < qqeTrailingThresholdShort
+        // 第一次触发：满足任一条件时启动移动止损
+        if not shortTrailActive and (trigger1 or trigger2)
+            shortTrailActive := true
+            shortTrailStop := math.min(shortStopLoss, nz(preHigh, shortStopLoss), maxSSL)
+        // 已经启动后，持续下移止损价：min(原止损价, 前高点, maxSSL)
+        if shortTrailActive
+            shortTrailStop := math.min(shortTrailStop, nz(preHigh, shortTrailStop), maxSSL)
+            effectiveShortStop := math.min(shortStopLoss, shortTrailStop)
+        else
+            effectiveShortStop := shortStopLoss
+    else
+        effectiveShortStop := shortStopLoss
+    
+    // 止损条件：达到任何位置都可以止损
+    // close > 当前SuperTrend上轨立即平仓
+    bool shortStopLossHit = close > effectiveShortStop or high > effectiveShortStop
+    
+    // 止盈条件：达到任何位置都可以止盈
+    // 1. 固定止盈 1:3
+    bool shortTakeProfit1 = close <= shortTakeProfit or low <= shortTakeProfit
+    // 2. 指标止盈：close < SuperTrend下轨（可选）
+    bool shortTakeProfit2 = enableSupertrendTakeProfit and (close < minSuper or low < minSuper)
+    // 3. 指标止盈：close < Fibonacci下轨（可选）
+    bool shortTakeProfit3 = enableFibonacciTakeProfit and (close < lower_7 or low < lower_7)
+    
+    // 平仓条件
+    if shortStopLossHit or shortTakeProfit1 or shortTakeProfit2 or shortTakeProfit3
+        // 根据 close 和 entryPrice 的关系判断止盈/止损
+        string closeComment = close < entryPrice ? '止盈平空' : '止损平空'
+        strategy.close('sell', comment=closeComment)
+        // 平仓后重置移动止损状态
+        shortTrailActive := false
+        shortTrailStop := na
+        // 绘制白色框标记（使用初始止损位）
+        // 上边框：初始止损位（initialShortStopLoss），下边框：实际止盈位（shortTakeProfit）
+        if not na(entryPrice) and not na(initialShortStopLoss) and not na(shortTakeProfit)
+            box.new(entryBarIndex, initialShortStopLoss, bar_index, shortTakeProfit, border_color=color.new(color.white, 0), border_width=1, bgcolor=color.new(color.white, 90), extend=extend.none)
+        entryBarIndex := bar_index
+        
+// ========== 持仓状态更新 ==========
+isHoldingPosition := strategy.position_size != 0
+
+
+/////////////Nadaraya-Watson Envelope/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// indicator("Nadaraya-Watson Envelope [LuxAlgo]", "LuxAlgo - Nadaraya-Watson Envelope", overlay = true, max_lines_count = 500, max_labels_count = 500, max_bars_back=500)
+
+showNadarayaWatsonEnvelope = input.bool(title='Show Nadaraya-Watson Envelope', defval = true, group=group_nwe)
+h = 8.0 // input.float(8.,'Bandwidth', minval = 0, group=group_nwe)
+mult2 = 3.0 // input.float(3., minval = 0, group=group_nwe)
+src2 = close // input(close, 'Source', group=group_nwe)
+
+repaint = true // input.bool(true, 'Repainting Smoothing', tooltip = 'Repainting is an effect where the indicators historical output is subject to change over time. Disabling repainting will cause the indicator to output the endpoints of the calculations', group=group_nwe)
+
+//Style
+upCss = color.teal // input.color(color.teal, 'Colors', inline = 'inline1', group = group_nwe)
+dnCss = color.red // input.color(color.red, '', inline = 'inline1', group = group_nwe)
+
+//-----------------------------------------------------------------------------}
+//Functions
+//-----------------------------------------------------------------------------{
+//Gaussian window
+gauss(x, h) => math.exp(-(math.pow(x, 2)/(h * h * 2)))
+
+//-----------------------------------------------------------------------------}
+//Append lines
+//-----------------------------------------------------------------------------{
+n = bar_index
+
+var ln = array.new_line(0) 
+
+if barstate.isfirst and repaint
+    for i = 0 to 499
+        array.push(ln,line.new(na,na,na,na))
+
+//-----------------------------------------------------------------------------}
+//End point method
+//-----------------------------------------------------------------------------{
+var coefs = array.new_float(0)
+var den = 0.
+
+if barstate.isfirst and not repaint
+    for i = 0 to 499
+        w = gauss(i, h)
+        coefs.push(w)
+
+    den := coefs.sum()
+
+out = 0.
+if not repaint
+    for i = 0 to 499
+        out += src2[i] * coefs.get(i)
+out /= den
+mae = ta.sma(math.abs(src2 - out), 499) * mult2
+
+upper = out + mae
+lower = out - mae
+ 
+//-----------------------------------------------------------------------------}
+//Compute and display NWE
+//-----------------------------------------------------------------------------{
+float y2 = na
+float y1 = na
+
+nwe = array.new<float>(0)
+if barstate.islast and repaint
+    sae = 0.
+    //Compute and set NWE point 
+    for i = 0 to math.min(499,n - 1)
+        sum = 0.
+        sumw = 0.
+        //Compute weighted mean 
+        for j = 0 to math.min(499,n - 1)
+            w = gauss(i - j, h)
+            sum += src2[j] * w
+            sumw += w
+
+        y2 := sum / sumw
+        sae += math.abs(src2[i] - y2)
+        nwe.push(y2)
+    
+    sae := sae / math.min(499,n - 1) * mult2
+    for i = 0 to math.min(499,n - 1)
+        if i%2
+            line.new(n-i+1, y1 + sae, n-i, nwe.get(i) + sae, color = upCss)
+            line.new(n-i+1, y1 - sae, n-i, nwe.get(i) - sae, color = dnCss)
+        
+        if src2[i] > nwe.get(i) + sae and src2[i+1] < nwe.get(i) + sae
+            label.new(n-i, src2[i], '▼', color = color(na), style = label.style_label_down, textcolor = dnCss, textalign = text.align_center)
+        if src2[i] < nwe.get(i) - sae and src2[i+1] > nwe.get(i) - sae
+            label.new(n-i, src2[i], '▲', color = color(na), style = label.style_label_up, textcolor = upCss, textalign = text.align_center)
+        
+        y1 := nwe.get(i)
+
+//-----------------------------------------------------------------------------}
+//Dashboard
+//-----------------------------------------------------------------------------{
+var tb = table.new(position.top_right, 1, 1
+  , bgcolor = #1e222d
+  , border_color = #373a46
+  , border_width = 1
+  , frame_color = #373a46
+  , frame_width = 1)
+
+if repaint
+    tb.cell(0, 0, 'Repainting Mode Enabled', text_color = color.white, text_size = size.small)
+
+//-----------------------------------------------------------------------------}
+//Plot
+//-----------------------------------------------------------------------------}
+plot(repaint ? na : out + mae, 'Upper', upCss)
+plot(repaint ? na : out - mae, 'Lower', dnCss)
+
+//Crossing Arrows
+plotshape(ta.crossunder(close, out - mae) ? low : na, "Crossunder", shape.labelup, location.absolute, color(na), 0 , text = '▲', textcolor = upCss, size = size.tiny)
+plotshape(ta.crossover(close, out + mae) ? high : na, "Crossover", shape.labeldown, location.absolute, color(na), 0 , text = '▼', textcolor = dnCss, size = size.tiny)
+
+
+// ////////////////////////////// indicator("Anchored VWAP (Daily / Weekly / Monthly / Custom)", overlay=true, timeframe="", timeframe_gaps=true)
+
+// ─── 输入 ───
+vwap_anchorMode  = "Daily" // input.string("Daily", "Anchor Mode", options=["Daily", "Weekly", "Monthly", "Custom"], group=group_vwap)
+vwap_startHour   = 8 // input.int(8, "Custom Anchor Hour", minval=0, maxval=23, group=group_vwap)
+vwap_startMinute = 0 // input.int(0, "Custom Anchor Minute", minval=0, maxval=59, group=group_vwap)
+
+vwap_mult1 = 1.0 // input.float(1.0, "Band Multiplier 1", step=0.1, group=group_vwap)
+vwap_mult2 = 2.0 // input.float(2.0, "Band Multiplier 2", step=0.1, group=group_vwap)
+
+vwap_showVwap = input.bool(false, "Show VWAP Indicator", group=group_vwap)
+
+// ─── 计算 Anchor 时间 ───
+vwap_customAnchor = timestamp("GMT+0", year, month, dayofmonth, vwap_startHour, vwap_startMinute)
+
+// 每个周期的 bar 是否为锚定点
+vwap_isNewDay   = ta.change(time("D"))
+vwap_isNewWeek  = ta.change(time("W"))
+vwap_isNewMonth = ta.change(time("M"))
+
+vwap_isAnchor = switch vwap_anchorMode
+    "Daily"   => vwap_isNewDay
+    "Weekly"  => vwap_isNewWeek
+    "Monthly" => vwap_isNewMonth
+    "Custom"  => time >= vwap_customAnchor and ta.change(time("D"))  // 每天一次自定义锚点
+    => false
+
+// ─── 累积变量 ───
+var float vwap_cumPV = 0.0
+var float vwap_cumVol = 0.0
+var float vwap_cumSQ = 0.0
+var float vwap_val = na
+var float vwap_upper1 = na
+var float vwap_lower1 = na
+var float vwap_upper2 = na
+var float vwap_lower2 = na
+
+// ─── 每次新锚点重置 ───
+if vwap_isAnchor
+    vwap_cumPV := 0
+    vwap_cumVol := 0
+    vwap_cumSQ := 0
+
+// ─── 计算 Anchored VWAP ───
+vwap_typical = hlc3
+vwap_cumPV += vwap_typical * volume
+vwap_cumVol += volume
+vwap_cumSQ += vwap_typical * vwap_typical * volume
+
+vwap_val := vwap_cumVol > 0 ? vwap_cumPV / vwap_cumVol : na
+
+// 标准差
+vwap_mean_sq = vwap_cumVol > 0 ? vwap_cumSQ / vwap_cumVol : na
+vwap_variance = na(vwap_mean_sq) ? na : math.max(vwap_mean_sq - vwap_val * vwap_val, 0)
+vwap_stdev = math.sqrt(vwap_variance)
+
+vwap_upper1 := na(vwap_val) ? na : vwap_val + vwap_mult1 * vwap_stdev
+vwap_lower1 := na(vwap_val) ? na : vwap_val - vwap_mult1 * vwap_stdev
+vwap_upper2 := na(vwap_val) ? na : vwap_val + vwap_mult2 * vwap_stdev
+vwap_lower2 := na(vwap_val) ? na : vwap_val - vwap_mult2 * vwap_stdev
+
+// ─── 绘图 ───
+plot(vwap_showVwap ? vwap_val : na, "Anchored VWAP", color=color.orange, linewidth=2)
+plot(vwap_showVwap ? vwap_upper1 : na, "Upper Band 1", color=color.new(color.red, 0), linewidth=1)
+plot(vwap_showVwap ? vwap_lower1 : na, "Lower Band 1", color=color.new(color.green, 0), linewidth=1)
+plot(vwap_showVwap ? vwap_upper2 : na, "Upper Band 2", color=color.new(color.red, 50), linewidth=1)
+plot(vwap_showVwap ? vwap_lower2 : na, "Lower Band 2", color=color.new(color.green, 50), linewidth=1)
+
+// ========== Swing Highs-Lows & Candle Patterns [LuxAlgo] ==========
+showSwingPatterns = input.bool(title='展示Swing Highs/Lows & Candle Patterns', defval = false, group="Swing Patterns")
+
+// swingLength 已在前面定义，这里不再重复定义
+
+//Style
+swinghCss = color.red // input.color(color.red, 'Swing High', group = 'Swing Patterns')
+swinglCss = color.teal // input.color(color.teal, 'Swing Low', group = 'Swing Patterns')
+
+//Descriptions
+hammer_desc = "The hammer candlestick pattern is formed of a short body with a long lower wick, and is found at the bottom of a downward trend.\n\nA hammer shows that although there were selling pressures during the day, ultimately a strong buying pressure drove the price back up."
+ihammer_desc = "The inverted hammer is a similar pattern than the hammer pattern. The only difference being that the upper wick is long, while the lower wick is short.\n\nIt indicates a buying pressure, followed by a selling pressure that was not strong enough to drive the market price down. The inverse hammer suggests that buyers will soon have control of the market."
+bulleng_desc = "The bullish engulfing pattern is formed of two candlesticks. The first candle is a short red body that is completely engulfed by a larger green candle\n\nThough the second day opens lower than the first, the bullish market pushes the price up, culminating in an obvious win for buyers"
+hanging_desc = "The hanging man is the bearish equivalent of a hammer; it has the same shape but forms at the end of an uptrend.\nIt indicates that there was a significant sell-off during the day, but that buyers were able to push the price up again. The large sell-off is often seen as an indication that the bulls are losing control of the market."
+shooting_desc = "The shooting star is the same shape as the inverted hammer, but is formed in an uptrend: it has a small lower body, and a long upper wick.\nUsually, the market will gap slightly higher on opening and rally to an intra-day high before closing at a price just above the open – like a star falling to the ground."
+beareng_desc = "A bearish engulfing pattern occurs at the end of an uptrend. The first candle has a small green body that is engulfed by a subsequent long red candle.\nIt signifies a peak or slowdown of price movement, and is a sign of an impending market downturn. The lower the second candle goes, the more significant the trend is likely to be."
+
+//Data
+var float swing_phy = na
+var float swing_ply = na
+var string swing_H = na  // 永久保留 Swing High 标签
+var string swing_L = na  // 永久保留 Swing Low 标签
+
+swing_o = open[swingLength]
+swing_h = high[swingLength]
+swing_l = low[swingLength]
+swing_c = close[swingLength]
+
+swing_d = math.abs(swing_c - swing_o)
+swing_ph = ta.pivothigh(swingLength, swingLength)
+swing_pl = ta.pivotlow(swingLength, swingLength)
+
+// 永久保留 SwingH 和 SwingL 值
+if not na(swing_ph)
+    swing_H := swing_ph > swing_phy ? 'HH' : 'LH'
+    swing_phy := swing_ph
+
+if not na(swing_pl)
+    swing_L := swing_pl < swing_ply ? 'LL' : 'HL'
+    swing_ply := swing_pl
+
+//Patterns
+swing_hammer_cond = not na(swing_pl) and math.min(swing_o, swing_c) - swing_l > swing_d and swing_h - math.max(swing_c, swing_o) < swing_d
+swing_ihammer_cond = not na(swing_pl) and swing_h - math.max(swing_o, swing_c) > swing_d and math.min(swing_c, swing_o) - swing_l < swing_d
+swing_bulleng_cond = swing_c > swing_o and swing_c[1] < swing_o[1] and swing_c > swing_o[1] and swing_o < swing_c[1]
+swing_hanging_cond = not na(swing_ph) and math.min(swing_c, swing_o) - swing_l > swing_d and swing_h - math.max(swing_o, swing_c) < swing_d
+swing_shooting_cond = not na(swing_ph) and swing_h - math.max(swing_o, swing_c) > swing_d and math.min(swing_c, swing_o) - swing_l < swing_d
+swing_beareng_cond = swing_c < swing_o and swing_c[1] > swing_o[1] and swing_c < swing_o[1] and swing_o > swing_c[1]  // Bearish Engulfing: current red candle engulfs previous green candle
+
+//Determine pattern
+string swing_pattern_title = swing_hammer_cond ? 'Hammer'
+  : swing_ihammer_cond ? 'Inverted Hammer'
+  : swing_bulleng_cond ? 'Bullish Engulfing'
+  : swing_hanging_cond ? 'Hanging Man'
+  : swing_shooting_cond ? 'Shooting Star'
+  : swing_beareng_cond ? 'Bearish Engulfing'
+  : 'None'
+
+string swing_pattern_desc = swing_hammer_cond ? hammer_desc
+  : swing_ihammer_cond ? ihammer_desc
+  : swing_bulleng_cond ? bulleng_desc
+  : swing_hanging_cond ? hanging_desc
+  : swing_shooting_cond ? shooting_desc
+  : swing_beareng_cond ? beareng_desc
+  : ''
+
+//Set labels
+if showSwingPatterns
+    if not na(swing_ph)
+        //Set label (使用已永久保留的 swing_H)
+        label.new(bar_index[swingLength], swing_ph
+          , swing_H + "\n" + swing_pattern_title
+          , color = color(na)
+          , style = label.style_label_down
+          , textcolor = swinghCss
+          , tooltip = swing_pattern_desc)
+    
+    else if not na(swing_pl)
+        //Set label (使用已永久保留的 swing_L)
+        label.new(bar_index[swingLength], swing_pl
+          , swing_L + "\n" + swing_pattern_title
+          , color = color(na)
+          , style = label.style_label_up
+          , textcolor = swinglCss
+          , tooltip = swing_pattern_desc)
+

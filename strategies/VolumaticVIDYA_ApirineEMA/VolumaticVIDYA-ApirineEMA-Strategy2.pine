@@ -1,0 +1,814 @@
+//@version=6
+strategy("Volumatic VIDYA + Apirine Slow RSI", overlay=true,
+     initial_capital=10000,
+     default_qty_type=strategy.percent_of_equity,
+     default_qty_value=100,
+     margin_long=0, margin_short=0,
+     max_boxes_count=500, max_lines_count=500, max_labels_count=500, max_bars_back=5000)
+
+// ==========================================================================================
+// 方向开关
+// ==========================================================================================
+string dirGroup = "方向开关"
+bool  enableLong  = input.bool(true,  "启用做多", group=dirGroup)
+bool  enableShort = input.bool(true,  "启用做空", group=dirGroup)
+
+// ==========================================================================================
+// VIDYA参数
+// ==========================================================================================
+string vidyaGroup = "VIDYA参数"
+int   vidyaLength = input.int(10, "VIDYA Length", minval=1, group=vidyaGroup)
+int   vidyaMomentum = input.int(20, "VIDYA Momentum", minval=1, group=vidyaGroup)
+float bandDistance = input.float(2.0, "Distance factor for upper/lower bands", minval=0.1, step=0.1, group=vidyaGroup)
+float vidyaSource = input.source(close, "VIDYA Source", group=vidyaGroup)
+int   pivotLeftBars = input.int(3, "Pivot Left Bars", minval=1, group=vidyaGroup)
+int   pivotRightBars = input.int(3, "Pivot Right Bars", minval=1, group=vidyaGroup)
+
+// VIDYA颜色设置
+string vidyaColorGroup = "VIDYA颜色设置"
+color upTrendColor = input.color(#17dfad, "上升趋势颜色", group=vidyaColorGroup, inline="c")
+color downTrendColor = input.color(#dd326b, "下降趋势颜色", group=vidyaColorGroup, inline="c")
+bool  shadow = input.bool(true, "阴影填充", group=vidyaColorGroup, inline="c")
+
+// ==========================================================================================
+// 成交量参数
+// ==========================================================================================
+string volGroup = "成交量参数"
+int   volMaLen = input.int(20, "成交量均线周期", minval=1, group=volGroup)
+float volMult = input.float(1.2, "成交量放大倍数", minval=0.0, step=0.05, group=volGroup)
+
+// ==========================================================================================
+// Apirine Slow RSI参数
+// ==========================================================================================
+string rsiGroup = "Apirine Slow RSI参数"
+int   rsiPeriods = input.int(6, "Smoothing", minval=1, group=rsiGroup)
+int   rsiSmooth = input.int(14, "RSI Length", minval=1, group=rsiGroup)
+float rsiPrice = input.source(close, "RSI Source", group=rsiGroup)
+int   ema1Len = input.int(7, "EMA1 Length", minval=1, group=rsiGroup)
+int   ema2Len = input.int(30, "EMA2 Length", minval=1, group=rsiGroup)
+float rsiMid = input.float(50.0, "RSI Midline", step=0.1, group=rsiGroup)
+
+// ==========================================================================================
+// QQE MOD参数
+// ==========================================================================================
+string qqeGroup = "QQE MOD参数"
+int   qqeRSILengthPrimary = input.int(6, "Primary RSI周期", minval=1, group=qqeGroup)
+int   qqeRSISmoothingPrimary = input.int(5, "Primary RSI平滑", minval=1, group=qqeGroup)
+float qqeFactorPrimary = input.float(3.0, "Primary QQE因子", minval=0.1, step=0.1, group=qqeGroup)
+float qqeThresholdPrimary = input.float(3.0, "Primary阈值", minval=0.1, step=0.1, group=qqeGroup)
+int   qqeRSILengthSecondary = input.int(6, "Secondary RSI周期", minval=1, group=qqeGroup)
+int   qqeRSISmoothingSecondary = input.int(5, "Secondary RSI平滑", minval=1, group=qqeGroup)
+float qqeFactorSecondary = input.float(1.61, "Secondary QQE因子", minval=0.1, step=0.1, group=qqeGroup)
+float qqeThresholdSecondary = input.float(3.0, "Secondary阈值", minval=0.1, step=0.1, group=qqeGroup)
+int   qqeBollingerLength = input.int(50, "布林带周期", minval=1, group=qqeGroup)
+float qqeBollingerMultiplier = input.float(0.35, "布林带倍数", minval=0.001, step=0.1, maxval=5, group=qqeGroup)
+float qqeSource = input.source(close, "QQE数据源", group=qqeGroup)
+
+// ==========================================================================================
+// Trend Speed参数
+// ==========================================================================================
+string trendSpeedGroup = "Trend Speed参数"
+int   trendSpeedMaxLength = input.int(50, "Maximum Length", minval=1, group=trendSpeedGroup)
+float trendSpeedAccelMultiplier = input.float(5.0, "Accelerator Multiplier", minval=0.0, step=1.1, group=trendSpeedGroup)
+int   trendSpeedCollectionPeriod = input.int(100, "Collection Period", minval=5, step=10, group=trendSpeedGroup)
+
+// ==========================================================================================
+// 高低点计算参数（参考Swing Highs-Lows）
+// ==========================================================================================
+string pivotGroup = "高低点计算参数"
+int pivotLength = input.int(21, "Pivot Length", minval=1, group=pivotGroup, tooltip="用于计算前高点和前低点的周期，默认21（参考Swing Highs-Lows）")
+
+// ==========================================================================================
+// 入场条件参数
+// ==========================================================================================
+string entryGroup = "入场条件参数"
+float longSlopeThreshold = input.float(0.0001, "做多斜率阈值", step=0.0001, group=entryGroup, tooltip="做多时VIDYA通道下沿斜率必须大于此值，默认0.0001")
+float shortSlopeThreshold = input.float(-0.0001, "做空斜率阈值", step=0.0001, group=entryGroup, tooltip="做空时VIDYA通道上沿斜率必须小于此值，默认-0.0001")
+float longDynEmaSlopeThreshold = input.float(-0.002, "做多二次平仓dynEma斜率阈值", step=0.0001, group=entryGroup, tooltip="做多时如果dynEma斜率小于此值，立即全部平仓，默认-0.002")
+float shortDynEmaSlopeThreshold = input.float(0.002, "做空二次平仓dynEma斜率阈值", step=0.0001, group=entryGroup, tooltip="做空时如果dynEma斜率大于此值，立即全部平仓，默认0.002")
+float longSlowRsiThreshold = input.float(60.0, "做多slowRsi阈值", minval=0.0, maxval=100.0, step=1.0, group=entryGroup, tooltip="做多时slowRsi、slowRsiEMA7、slowRsiEMA30不能同时大于等于此值，默认60.0")
+float shortSlowRsiThreshold = input.float(40.0, "做空slowRsi阈值", minval=0.0, maxval=100.0, step=1.0, group=entryGroup, tooltip="做空时slowRsi、slowRsiEMA7、slowRsiEMA30不能同时小于等于此值，默认40.0")
+
+// ==========================================================================================
+// 止盈止损参数
+// ==========================================================================================
+string slTpGroup = "止盈止损参数"
+bool enablePartialTP = input.bool(false, "启用分批止盈", group=slTpGroup, tooltip="开启时，达到条件时平仓50%仓位锁定利润；关闭时，不使用分批止盈（默认关闭）")
+float partialTPRatio = input.float(1.5, "分批止盈盈亏比(R:R)", minval=0.1, step=0.1, group=slTpGroup, tooltip="达到此盈亏比时触发分批止盈，默认1.5")
+float maxRiskRewardRatio = input.float(3.0, "最大盈亏比(R:R)", minval=0.1, step=0.1, group=slTpGroup, tooltip="固定止盈的盈亏比，默认3.0")
+float breakevenRatio = input.float(1.0, "保本盈亏比(R:R)", minval=0.1, step=0.1, group=slTpGroup, tooltip="达到此盈亏比时移动止损到保本位置，默认1.0")
+float breakevenFactor = input.float(1.001, "保本系数（做多）", minval=1.0, step=0.0005, group=slTpGroup, tooltip="做多保本位置 = 开仓价格 × 此系数，默认1.001")
+float breakevenFactorShort = input.float(0.999, "保本系数（做空）", minval=0.999, maxval=1.0, step=0.0005, group=slTpGroup, tooltip="做空保本位置 = 开仓价格 × 此系数，默认0.999")
+
+// ==========================================================================================
+// 辅助函数
+// ==========================================================================================
+
+// VIDYA计算函数
+vidya_calc(float src, int vidya_length, int vidya_momentum) =>
+    float momentum = ta.change(src)
+    float sum_pos_momentum = math.sum(momentum >= 0 ? momentum : 0.0, vidya_momentum)
+    float sum_neg_momentum = math.sum(momentum >= 0 ? 0.0 : -momentum, vidya_momentum)
+    float abs_cmo = math.abs(100 * (sum_pos_momentum - sum_neg_momentum) / math.max(sum_pos_momentum + sum_neg_momentum, 1e-10))
+    float alpha = 2 / (vidya_length + 1)
+    var float vidya_value = 0.0
+    vidya_value := alpha * abs_cmo / 100 * src + (1 - alpha * abs_cmo / 100) * nz(vidya_value[1])
+    ta.sma(vidya_value, 15)
+
+// WIMA计算函数（用于Apirine Slow RSI）
+calc_wima(src, length) =>
+    var float ma = na
+    ma := na(ma[1]) ? src : (src + ma[1] * (length - 1)) / length
+    ma
+
+// QQE MOD计算函数
+calculateQQE(int rsiLength, int smoothingFactor, float qqeFactor, float source) =>
+    int wildersLength = rsiLength * 2 - 1
+    float rsi = ta.rsi(source, rsiLength)
+    float smoothedRsi = ta.ema(rsi, smoothingFactor)
+    float atrRsi = math.abs(smoothedRsi[1] - smoothedRsi)
+    float smoothedAtrRsi = ta.ema(atrRsi, wildersLength)
+    float dynamicAtrRsi = smoothedAtrRsi * qqeFactor
+    var float longBand = 0.0
+    var float shortBand = 0.0
+    var int trendDirection = 0
+    float atrDelta = dynamicAtrRsi
+    float newShortBand = smoothedRsi + atrDelta
+    float newLongBand = smoothedRsi - atrDelta
+    longBand := smoothedRsi[1] > longBand[1] and smoothedRsi > longBand[1] ? math.max(longBand[1], newLongBand) : newLongBand
+    shortBand := smoothedRsi[1] < shortBand[1] and smoothedRsi < shortBand[1] ? math.min(shortBand[1], newShortBand) : newShortBand
+    bool longBandCross = ta.cross(longBand[1], smoothedRsi)
+    if ta.cross(smoothedRsi, shortBand[1])
+        trendDirection := 1
+    else if longBandCross
+        trendDirection := -1
+    else
+        trendDirection := trendDirection[1]
+    float qqeTrendLine = trendDirection == 1 ? longBand : shortBand
+    [qqeTrendLine, smoothedRsi]
+
+// 扩展流动性线的函数（替代method）
+extend_liquidity_lines(array<line> line_array, float price_level, bool is_cross, float volume_val) =>
+    if line_array.size() > 0 and last_bar_index - bar_index < 5000
+        for i = 0 to line_array.size() - 1 by 1
+            if i < line_array.size()
+                line liquidity_line = line_array.get(i)
+                float current_line_level = line.get_y2(liquidity_line)
+                bool price_cross = is_cross ? price_level < current_line_level and price_level[1] >= current_line_level : price_level > current_line_level and price_level[1] <= current_line_level
+                bool is_short_line = bar_index - line.get_x1(liquidity_line) < 50
+                if price_cross and is_short_line
+                    line.set_x2(liquidity_line, bar_index)
+                    line_array.remove(i)
+                    label.new(bar_index - 1, price_level[1], str.tostring(volume_val, format.volume), color=color.rgb(0, 0, 0, 99), style=is_cross ? label.style_label_lower_left : label.style_label_upper_left, textcolor=chart.fg_color, size=size.small)
+                    label.new(bar_index - 1, price_level[1], text="◉", color=#00000003, textcolor=is_cross ? downTrendColor : upTrendColor, style=label.style_label_center, size=size.normal)
+
+// ==========================================================================================
+// 指标计算
+// ==========================================================================================
+
+// VIDYA指标计算
+float atr_value = ta.atr(200)
+float vidya_value = vidya_calc(vidyaSource, vidyaLength, vidyaMomentum)
+float vidyaUpper = vidya_value + atr_value * bandDistance
+float vidyaLower = vidya_value - atr_value * bandDistance
+
+// VIDYA趋势方向
+var bool vidyaIsTrendUp = false
+if ta.crossover(vidyaSource, vidyaUpper)
+    vidyaIsTrendUp := true
+if ta.crossunder(vidyaSource, vidyaLower)
+    vidyaIsTrendUp := false
+
+// smoothed_value（趋势线）
+float smoothed_value = na
+if vidyaIsTrendUp
+    smoothed_value := vidyaLower
+if not vidyaIsTrendUp
+    smoothed_value := vidyaUpper
+if ta.change(vidyaIsTrendUp)
+    smoothed_value := na
+
+// 趋势变化检测
+bool trendCrossUp = not vidyaIsTrendUp[1] and vidyaIsTrendUp
+bool trendCrossDown = not vidyaIsTrendUp and vidyaIsTrendUp[1]
+
+// 流动性线数组
+var array<line> liquidity_lines_low = array.new<line>(500)
+var array<line> liquidity_lines_high = array.new<line>(500)
+var line pivot_line = na
+var float volume_value = na
+
+// 成交量统计
+var float up_trend_volume = 0.0
+var float down_trend_volume = 0.0
+
+// 重置成交量统计（趋势变化时）
+if ta.change(trendCrossUp) or ta.change(trendCrossDown)
+    up_trend_volume := 0.0
+    down_trend_volume := 0.0
+
+// 累积成交量
+if not(ta.change(trendCrossUp) or ta.change(trendCrossDown))
+    up_trend_volume := up_trend_volume + (close > open ? volume : 0.0)
+    down_trend_volume := down_trend_volume + (close < open ? volume : 0.0)
+
+// 计算pivot点
+bool pivot_high = not na(ta.pivothigh(pivotLeftBars, pivotRightBars))
+bool pivot_low = not na(ta.pivotlow(vidyaSource, pivotLeftBars, pivotRightBars))
+
+// 创建并存储支撑线（pivot lows）
+if low[pivotRightBars] > smoothed_value and pivot_low and not na(smoothed_value)
+    pivot_line := line.new(bar_index[pivotRightBars], low[pivotRightBars], bar_index[pivotRightBars] + 5, low[pivotRightBars], color=color.new(upTrendColor, 50))
+    liquidity_lines_low.push(pivot_line)
+    volume_value := math.sum(volume, pivotRightBars + pivotLeftBars) / (pivotRightBars + pivotLeftBars)
+
+// 创建并存储阻力线（pivot highs）
+if high[pivotRightBars] < smoothed_value and pivot_high and not na(smoothed_value)
+    pivot_line := line.new(bar_index[pivotRightBars], high[pivotRightBars], bar_index[pivotRightBars] + 5, high[pivotRightBars], color=color.new(downTrendColor, 50))
+    liquidity_lines_high.push(pivot_line)
+    volume_value := math.sum(-volume, pivotRightBars + pivotLeftBars) / (pivotRightBars + pivotLeftBars)
+
+// 扩展流动性线
+if not na(smoothed_value)
+    extend_liquidity_lines(liquidity_lines_high, smoothed_value, true, volume_value)
+    extend_liquidity_lines(liquidity_lines_low, smoothed_value, false, volume_value)
+
+// 计算平均成交量和Delta Volume百分比
+float avg_volume_delta = (up_trend_volume + down_trend_volume) / 2.0
+string delta_volume = avg_volume_delta == 0.0 ? "0%" : str.tostring((up_trend_volume - down_trend_volume) / avg_volume_delta * 100.0, format.percent)
+
+// 趋势颜色
+color trend_color = vidyaIsTrendUp ? upTrendColor : downTrendColor
+
+// 成交量分析（成交量放大）- 已移除检测
+
+// Apirine Slow RSI计算
+float r1 = ta.ema(rsiPrice, rsiPeriods)
+float r2 = rsiPrice > r1 ? rsiPrice - r1 : 0.0
+float r3 = rsiPrice < r1 ? r1 - rsiPrice : 0.0
+float r4 = calc_wima(r2, rsiSmooth)
+float r5 = calc_wima(r3, rsiSmooth)
+float slowRsi = r5 == 0 ? 100.0 : 100.0 - (100.0 / (1.0 + (r4 / r5)))
+
+// EMA曲线
+float ema7 = ta.ema(slowRsi, ema1Len)
+float ema30 = ta.ema(slowRsi, ema2Len)
+
+// 金叉死叉
+bool goldenCross = ta.crossover(ema7, ema30)
+bool deathCross = ta.crossunder(ema7, ema30)
+
+// RSI条件
+bool rsiLT50 = slowRsi < rsiMid
+bool rsiGT50 = slowRsi > rsiMid
+
+// ==========================================================================================
+// QQE MOD指标计算
+// ==========================================================================================
+[primaryQQETrendLine, primaryRSI] = calculateQQE(qqeRSILengthPrimary, qqeRSISmoothingPrimary, qqeFactorPrimary, qqeSource)
+[secondaryQQETrendLine, secondaryRSI] = calculateQQE(qqeRSILengthSecondary, qqeRSISmoothingSecondary, qqeFactorSecondary, qqeSource)
+bollingerBasis = ta.sma(primaryQQETrendLine - 50, qqeBollingerLength)
+bollingerDeviation = qqeBollingerMultiplier * ta.stdev(primaryQQETrendLine - 50, qqeBollingerLength)
+bollingerUpper = bollingerBasis + bollingerDeviation
+bollingerLower = bollingerBasis - bollingerDeviation
+// QQE MOD柱子值（secondaryRSI - 50）
+float qqeModBar = secondaryRSI - 50
+// QQE MOD颜色判断（绿色>threshold，红色<-threshold）
+bool qqeModGreen = qqeModBar > qqeThresholdSecondary
+bool qqeModRed = qqeModBar < -qqeThresholdSecondary
+
+// ==========================================================================================
+// Trend Speed指标计算（简化版）
+// ==========================================================================================
+float counts_diff = close
+float max_abs_counts_diff = ta.highest(math.abs(counts_diff), 200)
+float counts_diff_norm = (counts_diff + max_abs_counts_diff) / (2 * max_abs_counts_diff)
+float dyn_length = 5 + counts_diff_norm * (trendSpeedMaxLength - 5)
+float delta_counts_diff = math.abs(counts_diff - nz(counts_diff[1]))
+float max_delta_counts_diff = ta.highest(delta_counts_diff, 200)
+max_delta_counts_diff := max_delta_counts_diff == 0 ? 1 : max_delta_counts_diff
+float accel_factor = delta_counts_diff / max_delta_counts_diff
+float alpha_base = 2 / (dyn_length + 1)
+float alpha = math.min(1, alpha_base * (1 + accel_factor * trendSpeedAccelMultiplier))
+var float dyn_ema = na
+dyn_ema := na(dyn_ema[1]) ? close : alpha * close + (1 - alpha) * dyn_ema[1]
+float trend = dyn_ema
+var float speed = 0.0
+var int trendPos = 0
+float c = ta.rma(close, 10)
+float o = ta.rma(open, 10)
+if close > trend and close[1] <= trend
+    trendPos := 1
+    speed := c - o
+if close < trend and close[1] >= trend
+    trendPos := -1
+    speed := c - o
+speed := speed + c - o
+float trendspeed = ta.hma(speed, 5)
+// Trend Speed颜色判断：参考原始指标，使用 ta.wma(close, 2) > dyn_ema 来判断
+bool trendSpeedGreen = ta.wma(close, 2) > dyn_ema
+bool trendSpeedRed = ta.wma(close, 2) <= dyn_ema
+
+// Dynamic Trend曲线颜色（用于绘制dyn_ema曲线）
+color dynEmaColor = ta.wma(close, 2) > dyn_ema ? color.lime : color.red
+bool dynEmaColorGreen = ta.wma(close, 2) > dyn_ema
+bool dynEmaColorRed = ta.wma(close, 2) <= dyn_ema
+
+// dynEmaColor转换检测（全局定义，供做多和做空共用）
+bool dynEmaColorRedToGreen = dynEmaColorRed[1] and dynEmaColorGreen
+bool dynEmaColorGreenToRed = dynEmaColorGreen[1] and dynEmaColorRed
+
+// 前高点和前低点跟踪（参考Trend Speed Analyzer和Swing Highs-Lows，使用pivot high/low）
+// 使用独立的pivotLength参数，默认21（参考Swing Highs-Lows）
+float pivotHighValue = ta.pivothigh(high, pivotLength, pivotLength)
+float pivotLowValue = ta.pivotlow(low, pivotLength, pivotLength)
+var float preHigh = na  // 前高点
+var float preLow = na   // 前低点
+var float phy = na  // 前一个pivot high值（用于判断HH/LH）
+var float ply = na  // 前一个pivot low值（用于判断LL/HL）
+
+// 更新前高点并判断HH/LH
+if not na(pivotHighValue)
+    preHigh := pivotHighValue
+    phy := pivotHighValue
+
+// 更新前低点并判断LL/HL
+if not na(pivotLowValue)
+    preLow := pivotLowValue
+    ply := pivotLowValue
+
+// ==========================================================================================
+// 交易逻辑
+// ==========================================================================================
+
+// ==========================================================================================
+// 交易状态管理
+// ==========================================================================================
+
+// 做多状态变量
+var float longEntryPrice = na
+var float longStopLoss = na
+var float longTakeProfit = na
+var float longInitialStopLoss = na
+var bool longPartialTPExecuted = false
+var bool longBreakevenMoved = false
+var box longEntryBox = na
+var bool longConfirmationEnabled = false  // 指标确认资格是否开启
+var bool longUseVidyaDynamicStopLoss = false  // 标记分批止盈后是否使用VIDYA通道动态止损
+var float longOriginalStopLoss = na  // 保存分批止盈时的原止损价格
+
+// 做空状态变量
+var float shortEntryPrice = na
+var float shortStopLoss = na
+var float shortTakeProfit = na
+var float shortInitialStopLoss = na
+var bool shortPartialTPExecuted = false
+var bool shortBreakevenMoved = false
+var box shortEntryBox = na
+var bool shortConfirmationEnabled = false  // 指标确认资格是否开启
+var bool shortUseVidyaDynamicStopLoss = false  // 标记分批止盈后是否使用VIDYA通道动态止损
+var float shortOriginalStopLoss = na  // 保存分批止盈时的原止损价格
+
+// ==========================================================================================
+// 持仓状态
+// ==========================================================================================
+
+float pos = strategy.position_size
+bool inLong = pos > 0
+bool inShort = pos < 0
+// 边沿检测：从有仓位到无仓位
+bool positionClosed = strategy.position_size[1] != 0 and strategy.position_size == 0
+bool wasLong = strategy.position_size[1] > 0
+bool wasShort = strategy.position_size[1] < 0
+
+// 检测异常：有持仓但状态变量未设置，尝试恢复或强制平仓
+if barstate.isconfirmed
+    // 做多持仓异常处理
+    if inLong and (na(longEntryPrice) or na(longStopLoss))
+        // 尝试从 strategy.opentrades 恢复入场价格
+        if strategy.opentrades > 0
+            string entryId = strategy.opentrades.entry_id(0)
+            float entryPrice = strategy.opentrades.entry_price(0)
+            if not na(entryPrice) and entryId == "LONG"
+                longEntryPrice := entryPrice
+                longStopLoss := na(vidyaLower) ? longEntryPrice * 0.999 : vidyaLower
+                longInitialStopLoss := longStopLoss
+                if longStopLoss >= longEntryPrice
+                    longStopLoss := longEntryPrice * 0.999
+                    longInitialStopLoss := longStopLoss
+                longTakeProfit := longEntryPrice + (longEntryPrice - longStopLoss) * maxRiskRewardRatio
+                longPartialTPExecuted := false
+                longBreakevenMoved := false
+            else
+                strategy.close("LONG", comment="异常持仓强制平仓")
+        else
+            strategy.close("LONG", comment="异常持仓强制平仓")
+    
+    // 做空持仓异常处理
+    if inShort and (na(shortEntryPrice) or na(shortStopLoss))
+        // 尝试从 strategy.opentrades 恢复入场价格
+        if strategy.opentrades > 0
+            string entryId = strategy.opentrades.entry_id(0)
+            float entryPrice = strategy.opentrades.entry_price(0)
+            if not na(entryPrice) and entryId == "SHORT"
+                shortEntryPrice := entryPrice
+                shortStopLoss := na(vidyaUpper) ? shortEntryPrice * 1.001 : vidyaUpper
+                shortInitialStopLoss := shortStopLoss
+                if shortStopLoss <= shortEntryPrice
+                    shortStopLoss := shortEntryPrice * 1.001
+                    shortInitialStopLoss := shortStopLoss
+                shortTakeProfit := shortEntryPrice - (shortStopLoss - shortEntryPrice) * maxRiskRewardRatio
+                shortPartialTPExecuted := false
+                shortBreakevenMoved := false
+                shortUseVidyaDynamicStopLoss := false  // 重置VIDYA动态止损标志
+                shortOriginalStopLoss := na  // 重置原止损价格
+            else
+                strategy.close("SHORT", comment="异常持仓强制平仓")
+        else
+            strategy.close("SHORT", comment="异常持仓强制平仓")
+
+// ==========================================================================================
+// 入场条件辅助函数
+// ==========================================================================================
+
+// 判断递增：连续三根K线的指标值都在变大，index[2] < index[1] < index
+isIncreasing(float val) => not na(val[2]) and not na(val[1]) and not na(val) and val[2] < val[1] and val[1] < val
+
+// 判断递减：连续三根K线的指标值都在变小，index[2] > index[1] > index
+isDecreasing(float val) => not na(val[2]) and not na(val[1]) and not na(val) and val[2] > val[1] and val[1] > val
+
+// 判断拐头向上：前一根下降，当前上升
+isTurningUp(float val) => not na(val[1]) and not na(val) and val[1] < val[0]
+
+// 判断拐头向下：前一根上升，当前下降
+isTurningDown(float val) => not na(val[1]) and not na(val) and val[1] > val[0]
+
+// ==========================================================================================
+// 入场条件
+// ==========================================================================================
+
+// 做多入场条件
+// 1. 趋势确认：最新的VIDYA通道为绿色
+bool longVidyaConfirm = vidyaIsTrendUp
+
+// 指标确认资格管理
+// dynEmaColor 从红色变为绿色，开启指标确认
+if longVidyaConfirm and dynEmaColorRedToGreen
+    longConfirmationEnabled := true
+
+// dynEmaColor 从绿色变为红色，关闭指标确认
+if longConfirmationEnabled and dynEmaColorGreenToRed
+    longConfirmationEnabled := false
+
+// 2. 进行指标确认：
+// - 是开启指标确认状态
+// - trendSpeed 柱子颜色为绿色
+// - VIDYA通道下沿斜率不能向下
+//   斜率计算方式：(vidyaLower - vidyaLower[1] + vidyaLower[1] - vidyaLower[2] + vidyaLower[2] - vidyaLower[3]) / 3
+//   简化后：(vidyaLower - vidyaLower[3]) / 3
+//   做多要求：斜率 > longSlopeThreshold
+// - close < VIDYA通道上沿
+float vidyaLowerSlope = na(vidyaLower) or na(vidyaLower[3]) ? na : (vidyaLower - vidyaLower[3]) / 3
+bool vidyaLowerSlopeOk = not na(vidyaLowerSlope) and vidyaLowerSlope > longSlopeThreshold
+bool closeBelowVidyaUpper = na(vidyaUpper) ? false : close < vidyaUpper
+bool slowRsiNotOverbought = not (slowRsi >= longSlowRsiThreshold and ema7 >= longSlowRsiThreshold and ema30 >= longSlowRsiThreshold)
+// 打印斜率值
+if not na(vidyaLowerSlope)
+    log.info("【做多斜率】vidyaLowerSlope=" + str.tostring(vidyaLowerSlope))
+bool longRsiConfirm = longConfirmationEnabled and trendSpeedGreen and vidyaLowerSlopeOk and closeBelowVidyaUpper and slowRsiNotOverbought
+
+
+// 3. 确保没有持仓且状态已复位
+bool longStateReady = strategy.position_size == 0 and na(longEntryPrice) and na(longStopLoss) and not longPartialTPExecuted
+bool longEntryCondition = enableLong and longStateReady and longVidyaConfirm and longRsiConfirm
+
+
+// 做空入场条件
+// 1. 趋势确认：最新的VIDYA通道为红色
+bool shortVidyaConfirm = not vidyaIsTrendUp
+
+// 指标确认资格管理
+// dynEmaColor 从绿色变为红色，开启指标确认
+if shortVidyaConfirm and dynEmaColorGreenToRed
+    shortConfirmationEnabled := true
+
+// dynEmaColor 从红色变为绿色，关闭指标确认
+if shortConfirmationEnabled and dynEmaColorRedToGreen
+    shortConfirmationEnabled := false
+
+// 2. 进行指标确认：
+// - 是开启指标确认状态
+// - trendSpeed 柱子颜色为红色
+// - VIDYA通道上沿斜率不能向上
+//   斜率计算方式：(vidyaUpper - vidyaUpper[1] + vidyaUpper[1] - vidyaUpper[2] + vidyaUpper[2] - vidyaUpper[3]) / 3
+//   简化后：(vidyaUpper - vidyaUpper[3]) / 3
+//   做空要求：斜率 < shortSlopeThreshold
+// - close > VIDYA通道下沿
+// - not(slowRsi <= 40 and slowRsiEMA7 <= 40 and slowRsiEMA30 <= 40)
+float vidyaUpperSlope = na(vidyaUpper) or na(vidyaUpper[3]) ? na : (vidyaUpper - vidyaUpper[3]) / 3
+bool vidyaUpperSlopeOk = not na(vidyaUpperSlope) and vidyaUpperSlope < shortSlopeThreshold
+bool closeAboveVidyaLower = na(vidyaLower) ? false : close > vidyaLower
+bool slowRsiNotOversold = not (slowRsi <= shortSlowRsiThreshold and ema7 <= shortSlowRsiThreshold and ema30 <= shortSlowRsiThreshold)
+// 打印斜率值
+if not na(vidyaUpperSlope)
+    log.info("【做空斜率】vidyaUpperSlope=" + str.tostring(vidyaUpperSlope))
+bool shortRsiConfirm = shortConfirmationEnabled and trendSpeedRed and vidyaUpperSlopeOk and closeAboveVidyaLower and slowRsiNotOversold
+
+
+// 3. 确保没有持仓且状态已复位
+bool shortStateReady = strategy.position_size == 0 and na(shortEntryPrice) and na(shortStopLoss) and not shortPartialTPExecuted
+bool shortEntryCondition = enableShort and shortStateReady and shortVidyaConfirm and shortRsiConfirm
+
+
+
+// ==========================================================================================
+// 入场逻辑（只开一单）
+// ==========================================================================================
+
+if longEntryCondition
+    log.info("【做多开仓】trendSpeed=" + str.tostring(trendspeed) + ", qqeModBar=" + str.tostring(qqeModBar))
+    strategy.entry("LONG", strategy.long)
+    longEntryPrice := close
+    longPartialTPExecuted := false
+    longBreakevenMoved := false
+    longUseVidyaDynamicStopLoss := false  // 重置VIDYA动态止损标志
+    longOriginalStopLoss := na  // 重置原止损价格
+    // 注意：开仓后不关闭指标确认资格，因为止盈或止损不算消耗机会
+    // 只有从开启条件到关闭条件的完整过程才算一次机会
+    
+    // 正常开单方式：止损设在 VIDYA通道下沿
+    longStopLoss := na(vidyaLower) ? longEntryPrice * 0.999 : vidyaLower
+    longInitialStopLoss := longStopLoss
+    // 确保止损价格有效
+    if longStopLoss >= longEntryPrice
+        longStopLoss := longEntryPrice * 0.999
+        longInitialStopLoss := longStopLoss
+    // 计算固定止盈价格（最大盈亏比）
+    longTakeProfit := longEntryPrice + (longEntryPrice - longStopLoss) * maxRiskRewardRatio
+    
+    // 创建白色框标记（止盈在上，止损在下），向后延长6根K线
+    if not na(longEntryPrice) and not na(longStopLoss) and not na(longTakeProfit)
+        longEntryBox := box.new(bar_index, longTakeProfit, bar_index + 6, longStopLoss, border_color=color.new(color.white, 0), border_width=1, bgcolor=color.new(color.white, 90), extend=extend.none)
+
+if shortEntryCondition
+    log.info("【做空开仓】trendSpeed=" + str.tostring(trendspeed) + ", qqeModBar=" + str.tostring(qqeModBar))
+    strategy.entry("SHORT", strategy.short)
+    shortEntryPrice := close
+    shortPartialTPExecuted := false
+    shortBreakevenMoved := false
+    shortUseVidyaDynamicStopLoss := false  // 重置VIDYA动态止损标志
+    shortOriginalStopLoss := na  // 重置原止损价格
+    // 注意：开仓后不关闭指标确认资格，因为止盈或止损不算消耗机会
+    // 只有从开启条件到关闭条件的完整过程才算一次机会
+    
+    // 正常开单方式：止损设在 VIDYA通道上沿
+    shortStopLoss := na(vidyaUpper) ? shortEntryPrice * 1.001 : vidyaUpper
+    shortInitialStopLoss := shortStopLoss
+    // 确保止损价格有效
+    if shortStopLoss <= shortEntryPrice
+        shortStopLoss := shortEntryPrice * 1.001
+        shortInitialStopLoss := shortStopLoss
+    // 计算固定止盈价格（最大盈亏比）
+    shortTakeProfit := shortEntryPrice - (shortStopLoss - shortEntryPrice) * maxRiskRewardRatio
+    
+    // 创建白色框标记（止损在上，止盈在下），向后延长6根K线
+    if not na(shortEntryPrice) and not na(shortStopLoss) and not na(shortTakeProfit)
+        shortEntryBox := box.new(bar_index, shortStopLoss, bar_index + 6, shortTakeProfit, border_color=color.new(color.white, 0), border_width=1, bgcolor=color.new(color.white, 90), extend=extend.none)
+
+// ==========================================================================================
+// 止损止盈管理
+// ==========================================================================================
+
+// 做多止损止盈管理
+if inLong and not na(longEntryPrice) and not na(longInitialStopLoss)
+    float initialRisk = longEntryPrice - longInitialStopLoss
+    if initialRisk > 0
+        float currentRR = (close - longEntryPrice) / initialRisk
+        
+        // 正常开单方式
+        // 1. 分批止盈：如果启用分批止盈
+        if enablePartialTP and not longPartialTPExecuted
+            // 计算分批止盈触发条件
+            // 条件1：close >= max(VIDYA通道上沿, 前高)
+            float maxUpperTarget = na(vidyaUpper) ? (na(preHigh) ? na : preHigh) : (na(preHigh) ? vidyaUpper : math.max(vidyaUpper, preHigh))
+            bool condition1 = not na(maxUpperTarget) and close >= maxUpperTarget
+            // 条件2：达到1:1.5盈亏比
+            bool condition2 = currentRR >= partialTPRatio
+            
+            // 如果达到 [close >= max(VIDYA通道上沿, 前高) or 达到1:1.5盈亏比]，先平仓50%
+            if condition1 or condition2
+                strategy.close("LONG", qty_percent=50, comment="做多部分止盈")
+                longPartialTPExecuted := true
+                // 保存原止损价格
+                float originalStopLoss = longStopLoss
+                // 然后止损价格改为 max(前低, 原来的止损价格）
+                float newStopLoss = na(preLow) ? originalStopLoss : math.max(preLow, originalStopLoss)
+                longStopLoss := newStopLoss
+                // 保存更新后的止损价格作为原止损价格（用于后续动态止损判断）
+                longOriginalStopLoss := newStopLoss
+                // 标记使用VIDYA通道动态止损
+                longUseVidyaDynamicStopLoss := true
+        
+        // 2. 移动止损到保本位置：盈亏比达到1:1时
+        if not longBreakevenMoved and currentRR >= breakevenRatio
+            float breakevenPrice = longEntryPrice * breakevenFactor
+            if breakevenPrice > longStopLoss
+                longStopLoss := breakevenPrice
+                longBreakevenMoved := true
+        
+        // 3. 分批止盈后的止损管理
+        if longUseVidyaDynamicStopLoss
+            // 计算dynEma斜率（使用3根K线的平均值）
+            // 斜率计算方式：(dyn_ema - dyn_ema[1] + dyn_ema[1] - dyn_ema[2] + dyn_ema[2] - dyn_ema[3]) / 3
+            // 简化后：(dyn_ema - dyn_ema[3]) / 3
+            float dynEmaSlope = na(dyn_ema) or na(dyn_ema[3]) ? na : (dyn_ema - dyn_ema[3]) / 3
+            
+            // 如果 dynEma 斜率 < 配置的阈值，立即全部平仓
+            if not na(dynEmaSlope) and dynEmaSlope < longDynEmaSlopeThreshold
+                strategy.close("LONG", comment="做多dynEma斜率止损")
+            
+            // 如果 VIDYA通道下沿 > 原止损价格，那么判断 close < VIDYA通道下沿 立即市价止损平仓
+            // 如果 VIDYA通道下沿 <= 原止损价格，止损价格还是保持原来的止损价格限价止损
+            if not na(vidyaLower) and not na(longOriginalStopLoss)
+                if vidyaLower > longOriginalStopLoss
+                    // 使用VIDYA通道下沿作为动态止损，如果close < VIDYA通道下沿，立即市价止损
+                    if close < vidyaLower
+                        strategy.close("LONG", comment="做多VIDYA动态止损")
+                else
+                    // 保持原止损价格限价止损
+                    longStopLoss := longOriginalStopLoss
+        
+        // 4. 趋势尾端：VIDYA通道绿色转红色时，平仓剩余仓位
+        if trendCrossDown
+            strategy.close("LONG", comment="做多趋势尾端平仓")
+        
+        // 5. 固定止盈：达到最大盈亏比时平仓
+        if currentRR >= maxRiskRewardRatio
+            strategy.close("LONG", comment="做多固定止盈")
+        
+        // 执行止损止盈
+        if not na(longStopLoss) and not na(longTakeProfit)
+            strategy.exit("Long SLTP", from_entry="LONG", stop=longStopLoss, limit=longTakeProfit)
+
+// 做空止损止盈管理
+if inShort and not na(shortEntryPrice) and not na(shortInitialStopLoss)
+    float initialShortRisk = shortInitialStopLoss - shortEntryPrice
+    if initialShortRisk > 0
+        float currentShortRR = (shortEntryPrice - close) / initialShortRisk
+        
+        // 正常开单方式
+        // 1. 分批止盈：如果启用分批止盈
+        if enablePartialTP and not shortPartialTPExecuted
+            // 计算分批止盈触发条件
+            // 条件1：close <= min(VIDYA通道下沿, 前低)
+            float minLowerTarget = na(vidyaLower) ? (na(preLow) ? na : preLow) : (na(preLow) ? vidyaLower : math.min(vidyaLower, preLow))
+            bool condition1Short = not na(minLowerTarget) and close <= minLowerTarget
+            // 条件2：达到1:1.5盈亏比
+            bool condition2Short = currentShortRR >= partialTPRatio
+            
+            // 如果达到 [close <= min(VIDYA通道下沿, 前低) or 达到1:1.5盈亏比]，先平仓50%
+            if condition1Short or condition2Short
+                strategy.close("SHORT", qty_percent=50, comment="做空部分止盈")
+                shortPartialTPExecuted := true
+                // 保存原止损价格
+                float originalStopLossShort = shortStopLoss
+                // 然后止损价格改为 min(前高, 原来的止损价格）
+                float newStopLossShort = na(preHigh) ? originalStopLossShort : math.min(preHigh, originalStopLossShort)
+                shortStopLoss := newStopLossShort
+                // 保存更新后的止损价格作为原止损价格（用于后续动态止损判断）
+                shortOriginalStopLoss := newStopLossShort
+                // 标记使用VIDYA通道动态止损
+                shortUseVidyaDynamicStopLoss := true
+        
+        // 2. 移动止损到保本位置：盈亏比达到1:1时
+        if not shortBreakevenMoved and currentShortRR >= breakevenRatio
+            float breakevenPrice = shortEntryPrice * breakevenFactorShort
+            if breakevenPrice < shortStopLoss and breakevenPrice > shortEntryPrice
+                shortStopLoss := breakevenPrice
+                shortBreakevenMoved := true
+        
+        // 3. 分批止盈后的止损管理
+        if shortUseVidyaDynamicStopLoss
+            // 计算dynEma斜率（使用3根K线的平均值）
+            // 斜率计算方式：(dyn_ema - dyn_ema[1] + dyn_ema[1] - dyn_ema[2] + dyn_ema[2] - dyn_ema[3]) / 3
+            // 简化后：(dyn_ema - dyn_ema[3]) / 3
+            float dynEmaSlopeShort = na(dyn_ema) or na(dyn_ema[3]) ? na : (dyn_ema - dyn_ema[3]) / 3
+            
+            // 如果 dynEma 斜率 > 配置的阈值，立即全部平仓
+            if not na(dynEmaSlopeShort) and dynEmaSlopeShort > shortDynEmaSlopeThreshold
+                strategy.close("SHORT", comment="做空dynEma斜率止损")
+            
+            // 如果 VIDYA通道上沿 < 原止损价格，那么判断 close > VIDYA通道上沿 立即市价止损平仓
+            // 如果 VIDYA通道上沿 >= 原止损价格，止损价格还是保持原来的止损价格限价止损
+            if not na(vidyaUpper) and not na(shortOriginalStopLoss)
+                if vidyaUpper < shortOriginalStopLoss
+                    // 使用VIDYA通道上沿作为动态止损，如果close > VIDYA通道上沿，立即市价止损
+                    if close > vidyaUpper
+                        strategy.close("SHORT", comment="做空VIDYA动态止损")
+                else
+                    // 保持原止损价格限价止损
+                    shortStopLoss := shortOriginalStopLoss
+        
+        // 4. 趋势尾端：VIDYA通道红色转绿色时，平仓剩余仓位
+        if trendCrossUp
+            strategy.close("SHORT", comment="做空趋势尾端平仓")
+        
+        // 5. 固定止盈：达到最大盈亏比时平仓
+        if currentShortRR >= maxRiskRewardRatio
+            strategy.close("SHORT", comment="做空固定止盈")
+        
+        // 执行止损止盈
+        if not na(shortStopLoss) and not na(shortTakeProfit)
+            strategy.exit("Short SLTP", from_entry="SHORT", stop=shortStopLoss, limit=shortTakeProfit)
+
+// ==========================================================================================
+// 状态重置（仓位完全平仓后）
+// ==========================================================================================
+
+// 边沿检测：从有仓位到无仓位时，立即复位所有状态变量
+if positionClosed
+    // 复位做多状态
+    if wasLong
+        longEntryPrice := na
+        longStopLoss := na
+        longTakeProfit := na
+        longInitialStopLoss := na
+    longPartialTPExecuted := false
+    longBreakevenMoved := false
+    longConfirmationEnabled := false  // 止盈或止损也关闭指标确认
+    longUseVidyaDynamicStopLoss := false  // 重置VIDYA动态止损标志
+    longOriginalStopLoss := na  // 重置原止损价格
+    // 复位做空状态
+    if wasShort
+        shortEntryPrice := na
+        shortStopLoss := na
+        shortTakeProfit := na
+        shortInitialStopLoss := na
+        shortPartialTPExecuted := false
+        shortBreakevenMoved := false
+        shortConfirmationEnabled := false  // 止盈或止损也关闭指标确认
+        shortUseVidyaDynamicStopLoss := false  // 重置VIDYA动态止损标志
+        shortOriginalStopLoss := na  // 重置原止损价格
+
+// 额外安全措施：如果仓位为0但状态变量未复位，强制复位
+if strategy.position_size == 0 and strategy.opentrades == 0
+    if not na(longEntryPrice) or not na(longStopLoss) or not na(longTakeProfit) or longPartialTPExecuted or longBreakevenMoved
+        longEntryPrice := na
+        longStopLoss := na
+        longTakeProfit := na
+        longInitialStopLoss := na
+        longPartialTPExecuted := false
+        longBreakevenMoved := false
+        longConfirmationEnabled := false
+        longUseVidyaDynamicStopLoss := false  // 重置VIDYA动态止损标志
+        longOriginalStopLoss := na  // 重置原止损价格
+    if not na(shortEntryPrice) or not na(shortStopLoss) or not na(shortTakeProfit) or shortPartialTPExecuted or shortBreakevenMoved
+        shortEntryPrice := na
+        shortStopLoss := na
+        shortTakeProfit := na
+        shortInitialStopLoss := na
+        shortPartialTPExecuted := false
+        shortBreakevenMoved := false
+        shortConfirmationEnabled := false
+        shortUseVidyaDynamicStopLoss := false  // 重置VIDYA动态止损标志
+        shortOriginalStopLoss := na  // 重置原止损价格
+
+// ==========================================================================================
+// 可视化
+// ==========================================================================================
+
+// VIDYA趋势线（smoothed_value）
+p1 = plot(smoothed_value, color=trend_color, linewidth=2, style=plot.style_linebr)
+p2 = plot(hl2, display=display.none)
+
+// 填充区域（趋势线和hl2之间）
+fill(p1, p2, color.new(trend_color, shadow ? 80 : 100))
+
+// VIDYA通道（可选显示）
+plot(vidyaUpper, "VIDYA Upper", color=color.new(color.gray, 70), linewidth=1)
+plot(vidyaLower, "VIDYA Lower", color=color.new(color.gray, 70), linewidth=1)
+
+// Dynamic Trend曲线（dyn_ema）
+plot(dyn_ema, "Dynamic Trend", color=dynEmaColor, linewidth=2)
+
+// 趋势变化标记
+plotshape(trendCrossUp[1] ? smoothed_value[0] : na, "Trend Up", style=shape.labelup, location=location.absolute, color=color.new(upTrendColor, 50), text="▲", textcolor=chart.fg_color)
+plotshape(trendCrossDown[1] ? smoothed_value[0] : na, "Trend Down", style=shape.labeldown, location=location.absolute, color=color.new(downTrendColor, 50), text="▼", textcolor=chart.fg_color)
+
+// 成交量统计标签（在最后一根K线显示）
+if barstate.islast
+    label.delete(label.new(bar_index, smoothed_value, "Buy: " + str.tostring(up_trend_volume, format.volume) + "\nSell: " + str.tostring(down_trend_volume, format.volume) + "\nDelta Volume: " + delta_volume, color=color.new(trend_color, 90), style=vidyaIsTrendUp ? label.style_label_upper_left : label.style_label_lower_left, textcolor=chart.fg_color)[1])
+    label.delete(label.new(bar_index, smoothed_value, text="✪", color=#00000003, textcolor=trend_color, style=label.style_label_center, size=size.large)[1])
+
+// 入场信号标记
+plotshape(longEntryCondition, "Long Entry", shape.triangleup, location.belowbar, color.new(color.green, 0), size=size.small)
+plotshape(shortEntryCondition, "Short Entry", shape.triangledown, location.abovebar, color.new(color.red, 0), size=size.small)
+
+// 前高点和前低点标记（参考Swing Highs-Lows，显示HH/LH/LL/HL）
+if not na(pivotHighValue)
+    string highLabel = na(phy[1]) ? "H" : (pivotHighValue > phy[1] ? "HH" : "LH")
+    label.new(bar_index[pivotLength], pivotHighValue, highLabel, color=color.new(color.red, 100), style=label.style_label_down, textcolor=color.red, size=size.small)
+
+if not na(pivotLowValue)
+    string lowLabel = na(ply[1]) ? "L" : (pivotLowValue < ply[1] ? "LL" : "HL")
+    label.new(bar_index[pivotLength], pivotLowValue, lowLabel, color=color.new(color.teal, 100), style=label.style_label_up, textcolor=color.teal, size=size.small)

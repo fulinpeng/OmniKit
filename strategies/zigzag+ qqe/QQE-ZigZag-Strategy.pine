@@ -1,0 +1,319 @@
+//@version=6
+strategy("QQE ZigZag + Supertrend Strategy", overlay=true, default_qty_type=strategy.percent_of_equity, default_qty_value=100, commission_type=strategy.commission.percent, commission_value=0.04)
+
+// ==========================================================================================
+//                                     策略说明
+// ==========================================================================================
+// 策略名称：QQE ZigZag + Supertrend 动量之字形策略
+//
+// 策略描述（根据视频字幕）：
+// 这是一个基于动量的之字形买卖指标策略，结合QQE指标和Supertrend趋势过滤。
+// 策略适用于股票、外汇、加密货币等交易市场。
+//
+// 指标说明：
+// 1. QQE ZigZag（基于动量的之字形指标）：
+//    - 基于QQE指标，反应非常敏感
+//    - 绿色 = 做多信号出现（底部反转）
+//    - 红色 = 做空信号出现（顶部反转）
+//    - 参数建议：RSI长度20，RSI平滑度1
+//
+// 2. Supertrend（趋势过滤线）：
+//    - 替代传统趋势线，计算更复杂
+//    - 绿色上涨趋势线 = 只做多
+//    - 红色下跌趋势线 = 只做空
+//    - 用于过滤逆势交易
+//
+// 交易逻辑：
+// - 做多条件：ZigZag出现绿色做多信号 + Supertrend为上涨趋势（绿色）
+// - 做空条件：ZigZag出现红色做空信号 + Supertrend为下跌趋势（红色）
+// - 在绿色上涨行情中只做多，在红色下跌行情中只做空
+//
+// 止损止盈：
+// - 止损：使用ZigZag的pivot点（做多止损在ZigZag底部，做空止损在ZigZag顶部）
+// - 止盈：固定盈亏比（可配置）
+//
+// 优势：
+// - 通过Supertrend过滤震荡行情，减少逆势交易
+// - 回测数据：最大回撤明显减小，收益基本保持不变
+// - 在下跌行情中不会再做多，在上涨行情中不会做空
+//
+// 注意事项：
+// - 适用于4小时大周期，但收益相对更高
+// - 如果用于其他交易品种或周期，需要自己调整参数
+// - 实盘交易风险非常大，本策略仅限技术知识交流，不提供任何投资建议
+// ==========================================================================================
+
+// ==========================================================================================
+//                                     参数设置
+// ==========================================================================================
+
+// === 策略开关 ===
+string strategyGroup = "策略开关"
+bool enableLong = input.bool(true, "启用做多", tooltip="开启做多功能", group=strategyGroup)
+bool enableShort = input.bool(true, "启用做空", tooltip="开启做空功能", group=strategyGroup)
+bool enableSupertrendFilter = input.bool(true, "启用Supertrend过滤", tooltip="使用Supertrend过滤逆势交易", group=strategyGroup)
+
+// === ZigZag QQE 参数 ===
+string zzGroup = "ZigZag QQE 参数"
+string r1_type = input.string("Wilders", "RSI类型", options=["Cutlers", "Wilders"], tooltip="选择RSI类型：Cutlers或Wilders", group=zzGroup)
+int r1_len = input.int(20, "RSI长度", minval=1, tooltip="RSI长度，视频中建议20", group=zzGroup)
+int r1_mtf = input.int(2, "MTF倍数", minval=1, tooltip="多时间框架倍数", group=zzGroup)
+float r1_mult = input.float(3.0, "QQE倍数", minval=0.1, step=0.1, tooltip="QQE倍数，类似Supertrend的倍数", group=zzGroup)
+int r1_smooth = input.int(1, "RSI平滑度", minval=1, tooltip="RSI平滑度，视频中建议1", group=zzGroup)
+
+// === Supertrend 参数 ===
+string stGroup = "Supertrend 参数"
+bool s1_incl = input.bool(true, "包含ZigZag", tooltip="是否在Supertrend计算中包含ZigZag", group=stGroup)
+int s1_len = input.int(34, "MA长度", minval=1, tooltip="Supertrend基础MA长度", group=stGroup)
+string s1_type = input.string("EMA", "MA类型", options=["SMA", "EMA", "HH / LL"], tooltip="Supertrend基础MA类型", group=stGroup)
+int s1_atr_len = input.int(34, "ATR长度", minval=1, tooltip="ATR长度", group=stGroup)
+float s1_atr_mult = input.float(4.25, "ATR倍数", minval=0.1, step=0.1, tooltip="ATR倍数", group=stGroup)
+
+// === 止损止盈参数 ===
+string slTpGroup = "止损止盈参数"
+float riskRewardRatio = input.float(3.0, "盈亏比", minval=0.1, step=0.1, tooltip="固定盈亏比", group=slTpGroup)
+float stopLossOffset = input.float(0.001, "止损偏移", minval=0, step=0.0001, tooltip="止损相对ZigZag pivot点的偏移百分比", group=slTpGroup)
+
+// ==========================================================================================
+//                                     函数定义
+// ==========================================================================================
+
+// 函数：Modified MTF Relative Strength Index
+f_rsi(_src, _len, _mtf, _type) =>
+    _change = _src - _src[_mtf]
+    _up = math.max(_change, 0)
+    _down = (-math.min(_change, 0))
+    _up_change = _type == "Wilders" ? ta.rma(_up, (_len * _mtf)) :
+                 _type == "Cutlers" ? ta.sma(_up, (_len * _mtf)) : na
+    _down_change = _type == "Wilders" ? ta.rma(_down, (_len * _mtf)) :
+                   _type == "Cutlers" ? ta.sma(_down, (_len * _mtf)) : na
+    _rsi = _down_change == 0 ? 100 : 
+           _up_change == 0 ? 0 : 
+           100 - (100 / (1 + _up_change / _down_change))
+    _rsi
+
+// 函数：ZigZag
+f_zz(_dir, _high, _low) =>
+    _up = _dir == 1
+    _down = _dir == -1
+    
+    var float _peak = 0.0
+    var float _bottom = 0.0
+    
+    _peak := _high > _peak[1] and _up or _down[1] and _up ? _high : nz(_peak[1])
+    _bottom := _low < _bottom[1] and _down or _up[1] and _down ? _low : nz(_bottom[1])
+    
+    _zz = _up and _down[1] ? _bottom[1] : 
+          _up[1] and _down ? _peak[1] : na
+    _top = _down and _up[1] ? _peak[1] : na
+    _bot = _up and _down[1] ? _bottom[1] : na
+    
+    [_zz, _top, _bot]
+
+// 函数：Modified QQE（返回trend值）
+f_qqe(_len, _mtf, _type, _smooth, _atr_mult) =>
+    _wilders = _len * 2 - 1
+    
+    _up_rsi = f_rsi(low, _len, _mtf, _type)
+    _up_ema = ta.ema(_up_rsi, _smooth)
+    _up_atr = math.abs(_up_ema[1] - _up_ema)
+    _up_diff = ta.ema(ta.ema(_up_atr, _wilders), _wilders) * _atr_mult
+    _up_ma = _up_ema - _up_diff
+    
+    var float _up = 0.0
+    _up := _up_ema[1] > _up[1] and _up_ema > _up[1] ? math.max(_up_ma, _up[1]) : _up_ma
+    
+    _dn_rsi = f_rsi(high, _len, _mtf, _type)
+    _dn_ema = ta.ema(_dn_rsi, _smooth)
+    _dn_atr = math.abs(_dn_ema[1] - _dn_ema)
+    _dn_diff = ta.ema(ta.ema(_dn_atr, _wilders), _wilders) * _atr_mult
+    _dn_ma = _dn_ema + _dn_diff
+    
+    var float _dn = 0.0
+    _dn := _dn_ema[1] < _dn[1] and _dn_ema < _dn[1] ? math.min(_dn_ma, _dn[1]) : _dn_ma
+    
+    var int _trend = 0
+    _trend := ta.crossover(_dn_ema, _dn[1]) ? 1 : 
+              ta.crossunder(_up_ema, _up[1]) ? -1 : 
+              nz(_trend[1], _trend)
+    _trend
+
+// 函数：Supertrend
+f_supertrend(_top, _bot, _incl, _len, _type, _atr_len, _atr_mult) =>
+    _atr = ta.atr(_atr_len) * _atr_mult
+    
+    _up_ma = _type == "EMA" ? ta.ema(low[1], _len) : 
+             _type == "SMA" ? ta.sma(low[1], _len) : 
+             _type == "HH / LL" ? ta.lowest(low[1], _len) : na
+    _up_b = _incl ? _bot[1] - _atr : na
+    
+    var float _up = 0.0
+    float _up_base = _up_ma - _atr
+    _up := low[1] > _up[1] ? math.max(_up_base, _up[1], nz(_up_b, _up_base - 1)) : _up_base
+    
+    _dn_ma = _type == "EMA" ? ta.ema(high[1], _len) : 
+             _type == "SMA" ? ta.sma(high[1], _len) : 
+             _type == "HH / LL" ? ta.highest(high[1], _len) : na
+    _dn_t = _incl ? _top[1] + _atr : na
+    
+    var float _dn = 0.0
+    float _dn_base = _dn_ma + _atr
+    _dn := high[1] < _dn[1] ? math.min(_dn_base, _dn[1], nz(_dn_t, _dn_base + 1)) : _dn_base
+    
+    var int _trend = 0
+    _trend := ta.crossover(high[1], _dn[1]) ? 1 :
+              ta.crossunder(low[1], _up[1]) ? -1 :
+              nz(_trend[1], _trend)
+    
+    [_trend, _up, _dn]
+
+// ==========================================================================================
+//                                     指标计算
+// ==========================================================================================
+
+// 计算QQE趋势
+qqe_trend = f_qqe(r1_len, r1_mtf, r1_type, r1_smooth, r1_mult)
+
+// 计算ZigZag
+[zz, zz_top, zz_bot] = f_zz(qqe_trend, high, low)
+
+// 计算Supertrend
+[s_trend, s_up, s_dn] = f_supertrend(zz_top, zz_bot, s1_incl, s1_len, s1_type, s1_atr_len, s1_atr_mult)
+
+// Supertrend趋势方向
+supertrendUp = s_trend == 1  // 上涨趋势（绿色）
+supertrendDown = s_trend == -1  // 下跌趋势（红色）
+
+// ZigZag信号（转换为布尔值）
+zigzagLongSignal = not na(zz_bot)  // ZigZag底部反转（绿色做多信号）
+zigzagShortSignal = not na(zz_top)  // ZigZag顶部反转（红色做空信号）
+
+// ==========================================================================================
+//                                     入场条件
+// ==========================================================================================
+
+// 做多条件：ZigZag出现做多信号 + Supertrend上涨趋势
+bool longCondition = enableLong and zigzagLongSignal and (not enableSupertrendFilter or supertrendUp)
+
+// 做空条件：ZigZag出现做空信号 + Supertrend下跌趋势
+bool shortCondition = enableShort and zigzagShortSignal and (not enableSupertrendFilter or supertrendDown)
+
+// ==========================================================================================
+//                                     入场执行
+// ==========================================================================================
+
+var float longEntryPrice = na
+var float longTakeProfit = na
+var float longStopLossValue = na
+var bool longEntryExecuted = false
+var array<box> longEntryBoxes = array.new<box>()
+
+var float shortEntryPrice = na
+var float shortTakeProfit = na
+var float shortStopLossValue = na
+var bool shortEntryExecuted = false
+var array<box> shortEntryBoxes = array.new<box>()
+
+// 做多入场
+if longCondition and strategy.position_size == 0 and strategy.opentrades == 0 and not longEntryExecuted and not na(zz_bot)
+    longEntryPrice := close
+    // 止损：ZigZag底部pivot点之下，确保止损低于入场价
+    float pivotLow = zz_bot
+    float stopLossBase = math.min(pivotLow, longEntryPrice * 0.995)  // 确保止损低于入场价
+    longStopLossValue := stopLossBase * (1 - stopLossOffset)
+    
+    // 确保止损低于入场价
+    if longStopLossValue >= longEntryPrice
+        longStopLossValue := longEntryPrice * 0.99
+    
+    longTakeProfit := longEntryPrice + (longEntryPrice - longStopLossValue) * riskRewardRatio
+    
+    // 创建白色矩形框
+    if not na(longStopLossValue) and not na(longTakeProfit) and longStopLossValue < longEntryPrice and longTakeProfit > longEntryPrice
+        box entryBox = box.new(left=bar_index, top=longTakeProfit, right=bar_index + 10, bottom=longStopLossValue, border_color=color.new(color.white, 0), border_width=1, bgcolor=color.new(color.white, 90), extend=extend.none)
+        array.push(longEntryBoxes, entryBox)
+    
+    strategy.entry("Long", strategy.long, comment="做多")
+    longEntryExecuted := true
+
+// 做空入场
+if shortCondition and strategy.position_size == 0 and strategy.opentrades == 0 and not shortEntryExecuted and not na(zz_top)
+    shortEntryPrice := close
+    // 止损：ZigZag顶部pivot点之上，确保止损高于入场价
+    float pivotHigh = zz_top
+    float stopLossBase = math.max(pivotHigh, shortEntryPrice * 1.005)  // 确保止损高于入场价
+    shortStopLossValue := stopLossBase * (1 + stopLossOffset)
+    
+    // 确保止损高于入场价
+    if shortStopLossValue <= shortEntryPrice
+        shortStopLossValue := shortEntryPrice * 1.01
+    
+    shortTakeProfit := shortEntryPrice - (shortStopLossValue - shortEntryPrice) * riskRewardRatio
+    
+    // 创建白色矩形框
+    if not na(shortStopLossValue) and not na(shortTakeProfit) and shortStopLossValue > shortEntryPrice and shortTakeProfit < shortEntryPrice
+        box entryBox = box.new(left=bar_index, top=shortStopLossValue, right=bar_index + 10, bottom=shortTakeProfit, border_color=color.new(color.white, 0), border_width=1, bgcolor=color.new(color.white, 90), extend=extend.none)
+        array.push(shortEntryBoxes, entryBox)
+    
+    strategy.entry("Short", strategy.short, comment="做空")
+    shortEntryExecuted := true
+
+// ==========================================================================================
+//                                     止损止盈执行
+// ==========================================================================================
+
+// 做多止损止盈（持续设置，直到平仓）
+if strategy.position_size > 0 and not na(longEntryPrice) and not na(longStopLossValue) and not na(longTakeProfit)
+    // 验证价格合理性：止损必须低于入场价，止盈必须高于入场价
+    if longStopLossValue < longEntryPrice and longTakeProfit > longEntryPrice and longStopLossValue > 0 and longTakeProfit > 0
+        strategy.exit("Long Exit", "Long", stop=longStopLossValue, limit=longTakeProfit)
+
+// 做空止损止盈（持续设置，直到平仓）
+if strategy.position_size < 0 and not na(shortEntryPrice) and not na(shortStopLossValue) and not na(shortTakeProfit)
+    // 验证价格合理性：止损必须高于入场价，止盈必须低于入场价
+    if shortStopLossValue > shortEntryPrice and shortTakeProfit < shortEntryPrice and shortStopLossValue > 0 and shortTakeProfit > 0
+        strategy.exit("Short Exit", "Short", stop=shortStopLossValue, limit=shortTakeProfit)
+
+// 重置变量（只有在完全平仓且没有待执行订单后才重置）
+if strategy.position_size == 0 and strategy.opentrades == 0
+    // 只有当之前有持仓记录时才重置
+    if longEntryExecuted or not na(longEntryPrice)
+        longEntryExecuted := false
+        longEntryPrice := na
+        longStopLossValue := na
+        longTakeProfit := na
+    
+    if shortEntryExecuted or not na(shortEntryPrice)
+        shortEntryExecuted := false
+        shortEntryPrice := na
+        shortStopLossValue := na
+        shortTakeProfit := na
+
+// ==========================================================================================
+//                                     可视化
+// ==========================================================================================
+
+// 绘制ZigZag
+plot(zz, "ZigZag", color=color.new(#5b9cf6, 0), linewidth=2)
+
+// 绘制Supertrend
+plot(enableSupertrendFilter and supertrendUp ? s_up : na, "Supertrend Up", color=color.new(color.green, 0), linewidth=1, style=plot.style_linebr)
+plot(enableSupertrendFilter and supertrendDown ? s_dn : na, "Supertrend Down", color=color.new(color.red, 0), linewidth=1, style=plot.style_linebr)
+
+// 绘制止损止盈线
+plot(strategy.position_size > 0 ? longStopLossValue : na, "做多止损", color=color.red, style=plot.style_linebr, linewidth=1)
+plot(strategy.position_size > 0 ? longTakeProfit : na, "做多止盈", color=color.green, style=plot.style_linebr, linewidth=1)
+plot(strategy.position_size < 0 ? shortStopLossValue : na, "做空止损", color=color.red, style=plot.style_linebr, linewidth=1)
+plot(strategy.position_size < 0 ? shortTakeProfit : na, "做空止盈", color=color.green, style=plot.style_linebr, linewidth=1)
+
+// 绘制ZigZag pivot点
+plotshape(zigzagLongSignal, "ZigZag Long", style=shape.triangleup, location=location.belowbar, color=color.new(color.green, 0), size=size.small)
+plotshape(zigzagShortSignal, "ZigZag Short", style=shape.triangledown, location=location.abovebar, color=color.new(color.red, 0), size=size.small)
+
+// 绘制策略入场信号
+plotshape(longCondition and strategy.position_size == 0, "策略做多", style=shape.labelup, location=location.belowbar, color=color.new(color.green, 0), textcolor=color.new(color.white, 0), size=size.normal)
+plotshape(shortCondition and strategy.position_size == 0, "策略做空", style=shape.labeldown, location=location.abovebar, color=color.new(color.red, 0), textcolor=color.new(color.white, 0), size=size.normal)
+
+// 背景颜色
+bgcolor(supertrendUp ? color.new(color.green, 95) : supertrendDown ? color.new(color.red, 95) : na, title="趋势背景")
+

@@ -1,0 +1,386 @@
+//@version=6
+strategy("Median+TrendTrader+STC", overlay=true,
+     initial_capital=10000,
+     default_qty_type=strategy.percent_of_equity,
+     default_qty_value=100,
+     margin_long=0, margin_short=0,
+     max_boxes_count=500, max_lines_count=500, max_labels_count=500, max_bars_back=5000)
+
+// ==========================================================================================
+// 方向开关
+// ==========================================================================================
+string dirGroup = "方向开关"
+bool  enableLong  = input.bool(true,  "启用做多", group=dirGroup)
+bool  enableShort = input.bool(true,  "启用做空", group=dirGroup)
+
+// ==========================================================================================
+// Median参数
+// ==========================================================================================
+string medianGroup = "Median参数"
+float medianSource = input.source(hl2, "Median数据源", group=medianGroup)
+int   medianLength = input.int(3, "Median周期", minval=1, group=medianGroup)
+int   medianAtrLength = input.int(14, "ATR周期", minval=1, group=medianGroup)
+float medianAtrMult = input.float(2.0, "ATR倍数", minval=0.1, step=0.1, group=medianGroup)
+
+// ==========================================================================================
+// Trend Trader参数
+// ==========================================================================================
+string ttGroup = "Trend Trader参数"
+int   ttLength = input.int(21, "Trend Trader周期", minval=1, group=ttGroup)
+float ttMultiplier = input.float(3.0, "Trend Trader倍数", minval=0.000001, step=0.1, group=ttGroup)
+
+// ==========================================================================================
+// STC参数
+// ==========================================================================================
+string stcGroup = "STC参数"
+int   stcLength = input.int(12, "STC周期", minval=1, group=stcGroup)
+int   stcFastLength = input.int(26, "STC快线周期", minval=1, group=stcGroup)
+int   stcSlowLength = input.int(50, "STC慢线周期", minval=1, group=stcGroup)
+float stcAlpha = input.float(0.5, "STC平滑系数", minval=0.01, maxval=1.0, step=0.01, group=stcGroup)
+
+// ==========================================================================================
+// 多单：止盈止损/移动止损参数（独立）
+// ==========================================================================================
+string longSlTpGroup = "多单-止盈止损参数"
+float longRiskRewardRatio = input.float(3.0, "多单 最大盈亏比(R:R)", minval=0.1, step=0.1, group=longSlTpGroup)
+
+string longTrailGroup = "多单-移动止损参数"
+bool  enableLongTrailingStop  = input.bool(true, "多单 启用移动止损", group=longTrailGroup)
+float longBreakevenFactor     = input.float(1.001, "多单 保本系数", minval=1.0, step=0.0005, group=longTrailGroup)
+float longPrincipalRR         = input.float(1.0, "多单 principalRR", minval=0, step=0.1, group=longTrailGroup)
+
+string longExitGroup = "多单-指标止盈开关"
+bool longEnableExitCondition = input.bool(false, "多单：启用指标止盈", group=longExitGroup)
+
+// ==========================================================================================
+// 空单：止盈止损/移动止损参数（独立）
+// ==========================================================================================
+string shortSlTpGroup = "空单-止盈止损参数"
+float shortRiskRewardRatio = input.float(3.0, "空单 最大盈亏比(R:R)", minval=0.1, step=0.1, group=shortSlTpGroup)
+
+string shortTrailGroup = "空单-移动止损参数"
+bool  enableShortTrailingStop  = input.bool(true, "空单 启用移动止损", group=shortTrailGroup)
+float shortBreakevenFactor     = input.float(0.999, "空单 保本系数", minval=0.0, step=0.0005, group=shortTrailGroup)
+float shortPrincipalRR         = input.float(1.0, "空单 principalRR", minval=0, step=0.1, group=shortTrailGroup)
+
+string shortExitGroup = "空单-指标止盈开关"
+bool shortEnableExitCondition = input.bool(false, "空单：启用指标止盈", group=shortExitGroup)
+
+// ==========================================================================================
+// 辅助函数
+// ==========================================================================================
+
+// 计算MACD差值
+calcMACD(float source, int fast, int slow) =>
+    fastMA = ta.ema(source, fast)
+    slowMA = ta.ema(source, slow)
+    fastMA - slowMA
+
+// ==========================================================================================
+// 指标计算
+// ==========================================================================================
+
+// Median指标
+float median = ta.percentile_nearest_rank(medianSource, medianLength, 50)
+float medianAtr = medianAtrMult * ta.atr(medianAtrLength)
+float medianUpper = median + medianAtr
+float medianLower = median - medianAtr
+float medianEma = ta.ema(median, medianLength)
+bool medianIsBullish = median > medianEma
+
+// Trend Trader指标
+float avgTR = ta.wma(ta.atr(1), ttLength)
+float highestC = ta.highest(ttLength)
+float lowestC = ta.lowest(ttLength)
+float hiLimit = highestC[1] - avgTR[1] * ttMultiplier
+float loLimit = lowestC[1] + avgTR[1] * ttMultiplier
+var float ttTrendLine = na
+var int ttPos = 0
+
+if close > hiLimit and close > loLimit
+    ttTrendLine := hiLimit
+else if close < loLimit and close < hiLimit
+    ttTrendLine := loLimit
+else
+    ttTrendLine := na(ttTrendLine[1]) ? close : ttTrendLine[1]
+
+ttPos := close > ttTrendLine ? 1 : close < ttTrendLine ? -1 : nz(ttPos[1], 0)
+bool ttIsBullish = ttPos == 1
+bool ttIsBearish = ttPos == -1
+bool ttTrendLineUp = not na(ttTrendLine) and not na(ttTrendLine[1]) and ttTrendLine > ttTrendLine[1]
+bool ttTrendLineDown = not na(ttTrendLine) and not na(ttTrendLine[1]) and ttTrendLine < ttTrendLine[1]
+
+// STC指标计算（在全局作用域直接计算，使用var变量保持状态）
+var float stcStoch1 = 0.0
+var float stcStoch2 = 0.0
+var float stcStoch3 = 0.0
+var float stcStoch4 = 0.0
+
+float stcMacdValue = calcMACD(close, stcFastLength, stcSlowLength)
+float stcLowestMacd = ta.lowest(stcMacdValue, stcLength)
+float stcHighestMacd = ta.highest(stcMacdValue, stcLength)
+float stcRangeMacd = stcHighestMacd - stcLowestMacd
+
+stcStoch1 := stcRangeMacd > 0 ? (stcMacdValue - stcLowestMacd) / stcRangeMacd * 100 : nz(stcStoch1[1])
+stcStoch2 := na(stcStoch2[1]) ? stcStoch1 : stcStoch2[1] + stcAlpha * (stcStoch1 - stcStoch2[1])
+
+float stcLowestStoch2 = ta.lowest(stcStoch2, stcLength)
+float stcHighestStoch2 = ta.highest(stcStoch2, stcLength)
+float stcRangeStoch2 = stcHighestStoch2 - stcLowestStoch2
+
+stcStoch3 := stcRangeStoch2 > 0 ? (stcStoch2 - stcLowestStoch2) / stcRangeStoch2 * 100 : nz(stcStoch3[1])
+stcStoch4 := na(stcStoch4[1]) ? stcStoch3 : stcStoch4[1] + stcAlpha * (stcStoch3 - stcStoch4[1])
+
+float stcValue = stcStoch4
+bool stcBuySignal = stcValue[3] >= stcValue[2] and stcValue[2] < stcValue[1] and stcValue < 25
+bool stcSellSignal = stcValue[3] <= stcValue[2] and stcValue[2] > stcValue[1] and stcValue > 75
+
+// ==========================================================================================
+// 准备状态
+// ==========================================================================================
+
+// 准备做多条件
+bool readyBuyCondition = medianIsBullish and ttIsBullish
+
+// 准备做空条件
+bool readySellCondition = not medianIsBullish and ttIsBearish
+
+// ==========================================================================================
+// 入场条件
+// ==========================================================================================
+
+// 做多入场条件
+bool medianLongCondition = close > medianUpper and medianIsBullish
+bool ttLongCondition = ttIsBullish and ttTrendLineUp
+bool longEntryCondition = enableLong and strategy.position_size == 0 and strategy.opentrades == 0 and 
+                          readyBuyCondition and medianLongCondition and ttLongCondition and stcBuySignal
+
+// 做空入场条件
+bool medianShortCondition = close < medianLower and not medianIsBullish
+bool ttShortCondition = ttIsBearish and ttTrendLineDown
+bool shortEntryCondition = enableShort and strategy.position_size == 0 and strategy.opentrades == 0 and 
+                           readySellCondition and medianShortCondition and ttShortCondition and stcSellSignal
+
+// ==========================================================================================
+// 多单/空单变量
+// ==========================================================================================
+
+var float longEntryPrice      = na
+var float longStopLoss        = na
+var float longInitialStopLoss = na
+var float longTakeProfit      = na
+var bool  longEntryExecuted   = false
+var bool  longReachedPrincipalRRState = false
+var bool  longTP1Executed     = false
+
+var float shortEntryPrice      = na
+var float shortStopLoss        = na
+var float shortInitialStopLoss = na
+var float shortTakeProfit      = na
+var bool  shortEntryExecuted   = false
+var bool  shortReachedPrincipalRRState = false
+var bool  shortTP1Executed     = false
+
+var box[] longBoxes  = array.new_box()
+var box[] shortBoxes = array.new_box()
+
+// 平仓后统一重置
+bool positionClosed = strategy.position_size[1] != 0 and strategy.position_size == 0
+if positionClosed
+    longEntryExecuted   := false
+    longEntryPrice      := na
+    longStopLoss        := na
+    longInitialStopLoss := na
+    longTakeProfit      := na
+    longReachedPrincipalRRState := false
+    longTP1Executed     := false
+
+    shortEntryExecuted   := false
+    shortEntryPrice      := na
+    shortStopLoss        := na
+    shortInitialStopLoss := na
+    shortTakeProfit      := na
+    shortReachedPrincipalRRState := false
+    shortTP1Executed     := false
+
+// ==========================================================================================
+// 多单入场：初始SL/TP（不合法则放弃这一单）
+// ==========================================================================================
+
+if longEntryCondition
+    float entryPrice = close
+    
+    // 止损设在Trend Trader趋势线
+    float slCandidate = ttTrendLine
+    bool  slOk = not na(slCandidate) and slCandidate < entryPrice
+    
+    if slOk
+        float risk = entryPrice - slCandidate
+        float tp   = entryPrice + risk * longRiskRewardRatio
+        
+        bool tpOk = risk > 0 and tp > entryPrice
+        
+        if tpOk
+            longEntryPrice    := entryPrice
+            longStopLoss      := slCandidate
+            longInitialStopLoss := slCandidate
+            longTakeProfit    := tp
+            
+            longEntryExecuted := true
+            longReachedPrincipalRRState := false
+            longTP1Executed   := false
+            
+            box b = box.new(bar_index, longTakeProfit, bar_index + 10, longStopLoss,
+                 border_color=color.new(color.white, 0), border_width=1, bgcolor=color.new(color.white, 90), extend=extend.none)
+            array.push(longBoxes, b)
+            
+            strategy.entry("Long", strategy.long, comment="做多")
+
+// ==========================================================================================
+// 空单入场：初始SL/TP + 画白框（不合法则放弃这一单）
+// ==========================================================================================
+
+if shortEntryCondition
+    float entryPrice = close
+    
+    // 止损设在Trend Trader趋势线
+    float slCandidate = ttTrendLine
+    bool  slOk = not na(slCandidate) and slCandidate > entryPrice
+    
+    if slOk
+        float risk = slCandidate - entryPrice
+        float tp   = entryPrice - risk * shortRiskRewardRatio
+        
+        bool tpOk = risk > 0 and tp < entryPrice
+        
+        if tpOk
+            shortEntryPrice      := entryPrice
+            shortStopLoss        := slCandidate
+            shortInitialStopLoss := slCandidate
+            shortTakeProfit      := tp
+            
+            shortEntryExecuted := true
+            shortReachedPrincipalRRState := false
+            shortTP1Executed   := false
+            
+            // 空单白色框：上边界=SL，下边界=TP
+            box sb = box.new(bar_index, shortStopLoss, bar_index + 10, shortTakeProfit,
+                 border_color=color.new(color.white, 0), border_width=1, bgcolor=color.new(color.white, 90), extend=extend.none)
+            array.push(shortBoxes, sb)
+            
+            strategy.entry("Short", strategy.short, comment="做空")
+
+// ==========================================================================================
+// 多单：移动止损 + 分批止盈（独立参数）
+// ==========================================================================================
+
+if enableLongTrailingStop and strategy.position_size > 0 and longEntryExecuted and not na(longEntryPrice) and not na(longStopLoss) and not na(longInitialStopLoss)
+    float currentProfitHigh     = high - longEntryPrice
+    float initialRiskAmountLong = longEntryPrice - longInitialStopLoss
+    float currentRRHigh         = initialRiskAmountLong > 0 ? currentProfitHigh / initialRiskAmountLong : 0.0
+    float breakevenSL           = longEntryPrice * longBreakevenFactor
+    
+    if currentRRHigh >= longPrincipalRR
+        longReachedPrincipalRRState := true
+    
+    if longReachedPrincipalRRState and not longTP1Executed
+        strategy.close("Long", qty_percent=50, comment="Long TP1 principalRR")
+        longTP1Executed := true
+    
+    if longReachedPrincipalRRState and breakevenSL > longStopLoss
+        longStopLoss := breakevenSL
+    
+    // 更新止损为Trend Trader趋势线（如果趋势线上升）
+    if not na(ttTrendLine) and ttTrendLine > longStopLoss
+        longStopLoss := ttTrendLine
+    
+    if longStopLoss < longInitialStopLoss
+        longStopLoss := longInitialStopLoss
+
+// ==========================================================================================
+// 空单：移动止损 + 分批止盈（独立参数）
+// ==========================================================================================
+
+if enableShortTrailingStop and strategy.position_size < 0 and shortEntryExecuted and not na(shortEntryPrice) and not na(shortStopLoss) and not na(shortInitialStopLoss)
+    float currentProfitLow        = shortEntryPrice - low
+    float initialRiskAmountShort  = shortInitialStopLoss - shortEntryPrice
+    float currentRRShortHigh      = initialRiskAmountShort > 0 ? currentProfitLow / initialRiskAmountShort : 0.0
+    
+    // 空单保本：factor < 1 => breakeven 在 entry 下方一点
+    float breakevenSLShort        = shortEntryPrice * shortBreakevenFactor
+    
+    if currentRRShortHigh >= shortPrincipalRR
+        shortReachedPrincipalRRState := true
+    
+    if shortReachedPrincipalRRState and not shortTP1Executed
+        strategy.close("Short", qty_percent=50, comment="Short TP1 principalRR")
+        shortTP1Executed := true
+    
+    if shortReachedPrincipalRRState and breakevenSLShort < shortStopLoss
+        shortStopLoss := breakevenSLShort
+    
+    // 更新止损为Trend Trader趋势线（如果趋势线下降）
+    if not na(ttTrendLine) and ttTrendLine < shortStopLoss
+        shortStopLoss := ttTrendLine
+    
+    if shortStopLoss > shortInitialStopLoss
+        shortStopLoss := shortInitialStopLoss
+
+// ==========================================================================================
+// 多单：指标止盈触发
+// ==========================================================================================
+
+bool exitConditionLong = longEnableExitCondition and strategy.position_size > 0 and (stcValue >= 75 or ttIsBearish)
+
+if exitConditionLong and strategy.position_size > 0 and longEntryExecuted
+    strategy.close("Long", comment="Long Exit Indicator")
+    longEntryExecuted := false
+    longEntryPrice    := na
+    longStopLoss      := na
+    longInitialStopLoss := na
+    longTakeProfit    := na
+    longReachedPrincipalRRState := false
+    longTP1Executed   := false
+
+// ==========================================================================================
+// 空单：指标止盈触发
+// ==========================================================================================
+
+bool exitConditionShort = shortEnableExitCondition and strategy.position_size < 0 and (stcValue <= 25 or ttIsBullish)
+
+if exitConditionShort and strategy.position_size < 0 and shortEntryExecuted
+    strategy.close("Short", comment="Short Exit Indicator")
+    shortEntryExecuted := false
+    shortEntryPrice    := na
+    shortStopLoss      := na
+    shortInitialStopLoss := na
+    shortTakeProfit    := na
+    shortReachedPrincipalRRState := false
+    shortTP1Executed   := false
+
+// ==========================================================================================
+// 执行止盈/止损（分方向独立参数）
+// ==========================================================================================
+
+if strategy.position_size > 0 and longEntryExecuted and not na(longStopLoss) and not na(longTakeProfit)
+    strategy.exit("Long SLTP", from_entry="Long", stop=longStopLoss, limit=longTakeProfit)
+
+if strategy.position_size < 0 and shortEntryExecuted and not na(shortStopLoss) and not na(shortTakeProfit)
+    strategy.exit("Short SLTP", from_entry="Short", stop=shortStopLoss, limit=shortTakeProfit)
+
+// ==========================================================================================
+// 可视化
+// ==========================================================================================
+
+// Median指标可视化（保留原始效果）
+median_plot = plot(median, "Median", color=color.new(color.red, 0), linewidth=3)
+plot(medianUpper, "Median上轨", color=color.new(color.lime, 0), linewidth=1)
+plot(medianLower, "Median下轨", color=color.new(color.fuchsia, 0), linewidth=1)
+median_ema_plot = plot(medianEma, "Median EMA", color=color.new(color.blue, 0), linewidth=1)
+// Median填充效果：median > median_ema时绿色，否则紫色
+fill(median_plot, median_ema_plot, color=median > medianEma ? color.new(color.lime, 60) : color.new(color.fuchsia, 60))
+
+// Trend Trader指标可视化（保留原始效果）
+plot(ttTrendLine, "Trend Trader趋势线", color=color.new(color.blue, 0), linewidth=2)
+// Trend Trader K线颜色：pos == -1红色，pos == 1绿色，其他蓝色
+barcolor(ttPos == -1 ? color.red : ttPos == 1 ? color.green : color.blue, title="Trend Trader K线颜色")

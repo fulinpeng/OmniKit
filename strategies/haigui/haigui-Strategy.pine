@@ -1,0 +1,332 @@
+//@version=6
+strategy("haigui Trading Rules", overlay=true,
+     default_qty_type=strategy.percent_of_equity, default_qty_value=100,
+     commission_type=strategy.commission.percent, commission_value=0.02,
+     max_labels_count=500, max_lines_count=500, max_boxes_count=500)
+
+// ==========================================================================================
+// 策略说明 1h级别开启以损定仓和移动止损模式还可以的
+// 移动止损：按盈亏比
+// 做多很不错，做空很差（放弃吧），做多年化10%
+// ==========================================================================================
+//
+// 交易规则：
+//
+// 【多单进场条件】
+// 1. 连续两根K线为阳线（收盘价大于开盘价）
+// 2. 当前K线的**最小价格（low）大于布林带中轨**
+// 3. 当前K线的实体部分（收盘价与开盘价的差值的绝对值）要大于前一根k线对应的布林带区间的一半（即上轨与中轨之间的差值）
+//
+// 【多单止损/止盈】
+// - 止损点为：开仓位置对应的布林带中轨 - 最近12根k线的平均高度，止盈取1:3盈亏比
+// - 如果 math.abs(开仓位置 - 止损位置) <= 最近12根k线的平均高度 * 3，那么止损点修改为当前k线的low - 最近12根k线的平均高度 * 3
+// - 定好止损时就可以算1:3止盈位置（此时画出白色框，宽度延长10根k线即可）
+//
+// 多单移动止损（默认关闭）：
+// - 盈亏比达到1:1，移动止损到保本位置（开仓价格*1.001）
+// - 盈亏比达到1:1.5、1:2、1:2.5时，移动止损到最近3根k线的最低点
+//
+//
+// 【空单进场条件】
+// 1. 连续两根K线为阴线（收盘价小于开盘价）
+// 2. 当前K线的**最大价格（high）小于布林带中轨**
+// 3. 当前K线的实体部分（开盘价与收盘价的差值绝对值）要大于前一根k线对应的布林带区间的一半
+//
+// 【空单止损/止盈】
+// - 止损点为：开仓位置对应的布林带中轨 + 最近12根k线的平均高度，止盈取1:3盈亏比
+// - 如果 math.abs(开仓位置 - 止损位置) <= 最近12根k线的平均高度，那么止损点修改为当前k线的high + 最近12根k线的平均高度 * 3
+// - 定好止损时就可以算1:3止盈位置（此时画出白色框，宽度延长10根k线即可）
+//
+// 空单移动止损（默认关闭）：
+// - 盈亏比达到1:1，移动止损到保本位置（开仓价格*0.999）
+// - 盈亏比达到1:1.5、1:2、1:2.5时，移动止损到最近3根k线的最高点
+//
+// ==========================================================================================
+
+// ========================= 参数 =========================
+
+// 策略开关
+string strategyGroup = "策略开关"
+bool enableLong  = input.bool(true,  "启用做多",  group=strategyGroup)
+bool enableShort = input.bool(true,  "启用做空",  group=strategyGroup)
+
+// 布林带参数
+string bbGroup = "布林带参数"
+int   bbLength = input.int(20,  "布林带长度", minval=1, group=bbGroup)
+float bbStdDev = input.float(2, "标准差",     minval=0.1, step=0.1, group=bbGroup)
+
+// 止损规则参数
+string slGroup = "止损规则参数"
+int   avgCandleHeightPeriod = input.int(12, "平均K线高度周期", minval=1, group=slGroup)
+float riskRewardRatio       = input.float(3.0, "盈亏比", minval=0.1, step=0.1, group=slGroup)
+bool  enableTrailingStop    = input.bool(true, "启用移动止损", group=slGroup)
+
+// 仓位管理参数
+string positionGroup = "仓位管理参数"
+bool  enableRiskBasedSizing = input.bool(false, "启用以损定仓", group=positionGroup, tooltip="开启后按照最大亏损占比计算下单仓位")
+float riskPerTradePercent = input.float(2.0, "最大亏损占比(%)", minval=0.1, maxval=100, step=0.1, group=positionGroup, tooltip="单笔允许亏损占账户权益的百分比")
+float riskPerTradeFraction = riskPerTradePercent * 0.01
+
+// 可视化参数
+string visGroup = "可视化参数"
+bool showBox = input.bool(true, "显示止损止盈框", group=visGroup)
+bool showBB  = input.bool(true, "显示布林带",     group=visGroup)
+
+// ========================= 全局变量 =========================
+
+// 布林带
+[bbMiddle, bbUpper, bbLower] = ta.bb(close, bbLength, bbStdDev)
+float prevBBHalfWidth = bbUpper[1] - bbMiddle[1]
+
+// 平均 K 线高度
+float avgCandleHeight = ta.sma(high - low, avgCandleHeightPeriod)
+
+// 多单变量
+var float longEntryPrice      = na
+var float longStopLoss        = na
+var float longInitialStopLoss = na
+var float longTakeProfit      = na
+var bool  longEntryExecuted   = false
+var box[] longBoxes           = array.new_box()
+
+// 空单变量
+var float shortEntryPrice      = na
+var float shortStopLoss        = na
+var float shortInitialStopLoss = na
+var float shortTakeProfit      = na
+var bool  shortEntryExecuted   = false
+var box[] shortBoxes           = array.new_box()
+
+// ========================= 以损定仓函数 =========================
+
+// 根据止损距离和风险百分比计算仓位大小
+calcRiskBasedQty(entryPrice, stopPrice) =>
+    // 解方程式：(math.abs(开单价格 - 止损价格) / 止损价格) * (开单仓位的数量 * 开单价格) = 单笔风险
+    // 得出：开单仓位的数量 = 单笔风险 * 止损价格 / (开单价格 * math.abs(开单价格 - 止损价格))
+    usableCapital = math.max(strategy.initial_capital, strategy.equity)
+    stopDistance = math.abs(entryPrice - stopPrice)
+    if stopDistance <= 0 or entryPrice <= 0 or stopPrice <= 0 or usableCapital <= 0
+        na
+    else
+        riskAmount = usableCapital * riskPerTradeFraction
+        // 根据方程式计算仓位数量
+        qty = (riskAmount * stopPrice) / (entryPrice * stopDistance)
+        // 限制最大仓位不超过可用资金
+        maxQtyByCapital = usableCapital / entryPrice
+        math.min(qty, maxQtyByCapital)
+
+// ========================= 先重置上一笔刚平掉的单 =========================
+
+// 注意：这里用的是上一根 bar 的仓位 vs 这一根开盘时的仓位
+bool longWasOpen  = strategy.position_size[1] > 0 and strategy.position_size == 0
+bool shortWasOpen = strategy.position_size[1] < 0 and strategy.position_size == 0
+
+if longWasOpen
+    longEntryExecuted   := false
+    longEntryPrice      := na
+    longStopLoss        := na
+    longInitialStopLoss := na
+    longTakeProfit      := na
+
+if shortWasOpen
+    shortEntryExecuted   := false
+    shortEntryPrice      := na
+    shortStopLoss        := na
+    shortInitialStopLoss := na
+    shortTakeProfit      := na
+
+// 现在状态已经清干净，再去看新的信号，就不会互相覆盖
+
+// ========================= 信号 =========================
+
+// 连续两根阳线/阴线
+bool twoBullishBars = close > open and close[1] > open[1]
+bool twoBearishBars = close < open and close[1] < open[1]
+
+// K线实体部分（收盘价与开盘价的差值的绝对值）
+float body = math.abs(close - open)
+
+// 做多信号
+// 1. 连续两根K线为阳线（收盘价大于开盘价）
+// 2. 当前K线的**最小价格（low）大于布林带中轨**
+// 3. 当前K线的实体部分（收盘价与开盘价的差值的绝对值）要大于前一根k线对应的布林带区间的一半（即上轨与中轨之间的差值）
+bool longEntryCondition =
+     enableLong and
+     not na(avgCandleHeight) and
+     twoBullishBars and
+     low > bbMiddle and
+     body > prevBBHalfWidth
+
+// 做空信号（每根K线都会检测，但只在没有仓位时才会开仓）
+// 1. 连续两根K线为阴线（收盘价小于开盘价）
+// 2. 当前K线的**最大价格（high）小于布林带中轨**
+// 3. 当前K线的实体部分（开盘价与收盘价的差值绝对值）要大于前一根k线对应的布林带区间的一半
+bool shortEntryCondition =
+     enableShort and
+     not na(avgCandleHeight) and
+     twoBearishBars and
+     high < bbMiddle and
+     body > prevBBHalfWidth
+
+// ========================= 入场逻辑 =========================
+
+// 多单入场
+if longEntryCondition and strategy.position_size == 0
+    longEntryPrice    := close
+    longEntryExecuted := true
+    
+    // 获取开仓位置对应的布林带中轨和平均高度
+    float entryBBMiddle = bbMiddle
+    float entryAvgH     = avgCandleHeight
+    
+    // 计算初始止损：开仓位置对应的布林带中轨 - 最近12根k线的平均高度
+    float initialStopLoss = entryBBMiddle - entryAvgH
+    
+    // 检查是否需要修改止损
+    // 如果 math.abs(开仓位置 - 止损位置) <= 最近12根k线的平均高度 * 3
+    // 那么止损点修改为当前k线的low - 最近12根k线的平均高度 * 3
+    float entryToStopDistance = math.abs(longEntryPrice - initialStopLoss)
+    if entryToStopDistance <= entryAvgH * 3
+        longStopLoss := low - entryAvgH * 3
+    else
+        longStopLoss := initialStopLoss
+    
+    // 确保止损有效（止损必须小于开仓价）
+    if na(longStopLoss) or longStopLoss >= longEntryPrice
+        longStopLoss := longEntryPrice * 0.999
+    
+    longInitialStopLoss := longStopLoss
+    
+    // 计算止盈：1:3盈亏比
+    longTakeProfit := longEntryPrice + (longEntryPrice - longStopLoss) * riskRewardRatio
+    if na(longTakeProfit) or longTakeProfit <= longEntryPrice
+        longTakeProfit := longEntryPrice * 1.001
+    
+    // 以损定仓：根据止损距离和风险百分比计算仓位大小
+    float qty = enableRiskBasedSizing ? calcRiskBasedQty(longEntryPrice, longStopLoss) : na
+    
+    // 如果启用了以损定仓且计算成功，使用计算的仓位；否则使用默认仓位
+    if enableRiskBasedSizing and not na(qty) and qty > 0
+        strategy.entry("Long", strategy.long, qty=qty, comment="做多")
+    else
+        strategy.entry("Long", strategy.long, comment="做多")
+    
+    // 画出白色框，宽度延长10根k线
+    if showBox and longStopLoss < longEntryPrice and longTakeProfit > longEntryPrice
+        box b = box.new(left=bar_index, top=longTakeProfit, right=bar_index + 10, bottom=longStopLoss, border_color=color.new(color.white, 0), border_width=1, bgcolor=color.new(color.white, 90), extend=extend.none)
+        array.push(longBoxes, b)
+
+// 空单入场
+if shortEntryCondition and strategy.position_size == 0
+    shortEntryPrice    := close
+    shortEntryExecuted := true
+    
+    // 获取开仓位置对应的布林带中轨和平均高度
+    float entryBBMiddleS = bbMiddle
+    float entryAvgHS     = avgCandleHeight
+    
+    // 计算初始止损：开仓位置对应的布林带中轨 + 最近12根k线的平均高度
+    float initialStopLossS = entryBBMiddleS + entryAvgHS
+    
+    // 检查是否需要修改止损
+    // 如果 math.abs(开仓位置 - 止损位置) <= 最近12根k线的平均高度
+    // 那么止损点修改为当前k线的high + 最近12根k线的平均高度 * 3
+    float entryToStopDistanceS = math.abs(shortEntryPrice - initialStopLossS)
+    if entryToStopDistanceS <= entryAvgHS
+        shortStopLoss := high + entryAvgHS * 3
+    else
+        shortStopLoss := initialStopLossS
+    
+    // 确保止损有效（止损必须大于开仓价）
+    if na(shortStopLoss) or shortStopLoss <= shortEntryPrice
+        shortStopLoss := shortEntryPrice * 1.001
+    
+    shortInitialStopLoss := shortStopLoss
+    
+    // 计算止盈：1:3盈亏比
+    shortTakeProfit := shortEntryPrice - (shortStopLoss - shortEntryPrice) * riskRewardRatio
+    if na(shortTakeProfit) or shortTakeProfit >= shortEntryPrice
+        shortTakeProfit := shortEntryPrice * 0.999
+    
+    // 以损定仓：根据止损距离和风险百分比计算仓位大小
+    float qtyS = enableRiskBasedSizing ? calcRiskBasedQty(shortEntryPrice, shortStopLoss) : na
+    
+    // 如果启用了以损定仓且计算成功，使用计算的仓位；否则使用默认仓位
+    if enableRiskBasedSizing and not na(qtyS) and qtyS > 0
+        strategy.entry("Short", strategy.short, qty=qtyS, comment="做空")
+    else
+        strategy.entry("Short", strategy.short, comment="做空")
+    
+    // 画出白色框，宽度延长10根k线
+    if showBox and shortStopLoss > shortEntryPrice and shortTakeProfit < shortEntryPrice
+        box b = box.new(left=bar_index, top=shortStopLoss, right=bar_index + 10, bottom=shortTakeProfit, border_color=color.new(color.white, 0), border_width=1, bgcolor=color.new(color.white, 90), extend=extend.none)
+        array.push(shortBoxes, b)
+
+// ========================= 移动止损 =========================
+
+// 多单移动止损
+// - 盈亏比达到1:1，移动止损到保本位置（开仓价格*1.001）
+// - 盈亏比达到1:1.5、1:2、1:2.5时，移动止损到最近3根k线的最低点
+if enableTrailingStop and strategy.position_size > 0 and longEntryExecuted and not na(longEntryPrice) and not na(longStopLoss) and not na(longInitialStopLoss)
+    float currentProfit     = close - longEntryPrice
+    float initialRiskAmount = longEntryPrice - longInitialStopLoss
+    float currentRR         = initialRiskAmount > 0 ? currentProfit / initialRiskAmount : 0.0
+    float recentLow         = math.min(low, math.min(low[1], low[2]))
+    
+    // RR >= 1：移到保本位置（开仓价格*1.001）
+    if currentRR >= 1.0
+        float breakevenSL = longEntryPrice * 1.001
+        if breakevenSL > longStopLoss
+            longStopLoss := breakevenSL
+    
+    // RR >= 1.5、1:2、1:2.5时，移动止损到最近3根k线的最低点
+    if currentRR >= 1.5 and recentLow > longStopLoss
+        longStopLoss := recentLow
+
+// 空单移动止损
+// - 盈亏比达到1:1，移动止损到保本位置（开仓价格*0.999）
+// - 盈亏比达到1:1.5、1:2、1:2.5时，移动止损到最近3根k线的最高点
+if enableTrailingStop and strategy.position_size < 0 and shortEntryExecuted and not na(shortEntryPrice) and not na(shortStopLoss) and not na(shortInitialStopLoss)
+    float currentProfitS     = shortEntryPrice - close
+    float initialRiskAmountS = shortInitialStopLoss - shortEntryPrice
+    float currentRRS         = initialRiskAmountS > 0 ? currentProfitS / initialRiskAmountS : 0.0
+    float recentHigh         = math.max(high, math.max(high[1], high[2]))
+    
+    // RR >= 1：移到保本位置（开仓价格*0.999）
+    if currentRRS >= 1.0
+        float breakevenSLS = shortEntryPrice * 0.999
+        if breakevenSLS < shortStopLoss
+            shortStopLoss := breakevenSLS
+    
+    // RR >= 1.5、1:2、1:2.5时，移动止损到最近3根k线的最高点
+    if currentRRS >= 1.5 and recentHigh < shortStopLoss
+        shortStopLoss := recentHigh
+
+// ========================= 保证 Stop / TP 关系正确 =========================
+
+// 多单：Stop 始终 < TP
+if not na(longStopLoss) and not na(longTakeProfit) and longStopLoss >= longTakeProfit
+    longStopLoss := longTakeProfit * 0.999
+
+// 空单：Stop 始终 > TP
+if not na(shortStopLoss) and not na(shortTakeProfit) and shortStopLoss <= shortTakeProfit
+    shortStopLoss := shortTakeProfit * 1.001
+
+// ========================= 止损止盈执行 =========================
+
+if strategy.position_size > 0 and longEntryExecuted and not na(longStopLoss) and not na(longTakeProfit)
+    strategy.exit("Long Exit", from_entry="Long", stop=longStopLoss, limit=longTakeProfit)
+
+if strategy.position_size < 0 and shortEntryExecuted and not na(shortStopLoss) and not na(shortTakeProfit)
+    strategy.exit("Short Exit", from_entry="Short", stop=shortStopLoss, limit=shortTakeProfit)
+
+// ========================= 可视化 =========================
+
+plot(showBB ? bbUpper  : na, "布林带上轨", color=color.new(color.blue,   0))
+plot(showBB ? bbMiddle : na, "布林带中轨", color=color.new(color.orange, 0))
+plot(showBB ? bbLower  : na, "布林带下轨", color=color.new(color.blue,   0))
+
+plotshape(longEntryCondition  and strategy.position_size == 0, "多单信号",
+          style=shape.triangleup,   location=location.belowbar, color=color.new(color.green, 0), size=size.small)
+plotshape(shortEntryCondition and strategy.position_size == 0, "空单信号",
+          style=shape.triangledown, location=location.abovebar, color=color.new(color.red,   0), size=size.small)

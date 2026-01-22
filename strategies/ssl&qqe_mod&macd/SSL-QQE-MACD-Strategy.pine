@@ -1,0 +1,539 @@
+//@version=6
+strategy("SSL+QQE_MOD+MACD策略_固定止盈+移动止损_多空分参版", overlay=true,
+     initial_capital=10000,
+     default_qty_type=strategy.percent_of_equity,
+     default_qty_value=100,
+     margin_long=0, margin_short=0,
+     max_boxes_count=500, max_lines_count=500, max_labels_count=500, max_bars_back=5000)
+
+// ==========================================================================================
+// 方向开关
+// ==========================================================================================
+string dirGroup = "方向开关"
+bool  enableLong  = input.bool(true,  "启用做多", group=dirGroup)
+bool  enableShort = input.bool(true,  "启用做空", group=dirGroup)
+
+// ==========================================================================================
+// SuperTrend参数
+// ==========================================================================================
+string stGroup = "SuperTrend参数"
+int   stATRPeriod  = input.int(30, "ATR周期", minval=1, group=stGroup)
+float stMultiplier = input.float(6.0, "ATR倍数", minval=0.1, step=0.1, group=stGroup)
+bool  stChangeATR  = input.bool(true, "改变ATR计算方法", group=stGroup)
+float stSource     = input.source(hl2, "数据源", group=stGroup)
+
+// ==========================================================================================
+// SSL参数
+// ==========================================================================================
+string sslGroup = "SSL参数"
+int ssl1Period  = input.int(50, "SSL1周期",  minval=1, group=sslGroup)
+int ssl1Length  = input.int(50, "SSL1长度",  minval=1, group=sslGroup)
+int ssl2Period  = input.int(100, "SSL2周期", minval=1, group=sslGroup)
+int ssl2Length  = input.int(100, "SSL2长度",  minval=1, group=sslGroup)
+
+// ==========================================================================================
+// MACD参数
+// ==========================================================================================
+string macdGroup = "MACD参数"
+int   macdFastLen = input.int(20, "快线周期",  minval=1, group=macdGroup)
+int   macdSlowLen = input.int(100,"慢线周期",  minval=1, group=macdGroup)
+int   macdSigLen  = input.int(9,  "信号线周期", minval=1, group=macdGroup)
+string macdOscType = input.string("EMA", "振荡器MA类型", options=["EMA","SMA"], group=macdGroup)
+string macdSigType = input.string("EMA", "信号线MA类型",   options=["EMA","SMA"], group=macdGroup)
+float  macdSource  = input.source(close, "数据源", group=macdGroup)
+
+// ==========================================================================================
+// QQE MOD参数
+// ==========================================================================================
+string qqeGroup = "QQE MOD参数"
+int   qqeRSILengthPrimary      = input.int(6,   "Primary RSI周期",      minval=1, group=qqeGroup)
+int   qqeRSISmoothingPrimary   = input.int(5,   "Primary RSI平滑",      minval=1, group=qqeGroup)
+float qqeFactorPrimary         = input.float(3.0,  "Primary QQE因子",   minval=0.1, step=0.1, group=qqeGroup)
+float qqeThresholdPrimary      = input.float(3.0,  "Primary阈值",       minval=0.1, step=0.1, group=qqeGroup)
+int   qqeRSILengthSecondary    = input.int(6,   "Secondary RSI周期",    minval=1, group=qqeGroup)
+int   qqeRSISmoothingSecondary = input.int(5,   "Secondary RSI平滑",    minval=1, group=qqeGroup)
+float qqeFactorSecondary       = input.float(1.61,"Secondary QQE因子",  minval=0.1, step=0.1, group=qqeGroup)
+float qqeThresholdSecondary    = input.float(3.0, "Secondary阈值",      minval=0.1, step=0.1, group=qqeGroup)
+int   qqeBollingerLength       = input.int(50,  "布林带周期",          minval=1, group=qqeGroup)
+float qqeBollingerMultiplier   = input.float(0.35,"布林带倍数",        minval=0.001, step=0.1, maxval=5, group=qqeGroup)
+float qqeSource                = input.source(close, "数据源", group=qqeGroup)
+
+// ==========================================================================================
+// 多单：止盈止损/移动止损参数（独立）
+// ==========================================================================================
+string longSlTpGroup = "多单-止盈止损参数"
+float longRiskRewardRatio = input.float(9.0, "多单 最大盈亏比(R:R)", minval=0.1, step=0.1, group=longSlTpGroup)
+
+string longTrailGroup = "多单-移动止损参数"
+bool  enableLongTrailingStop  = input.bool(true, "多单 启用移动止损", group=longTrailGroup)
+float longBreakevenFactor     = input.float(1.001, "多单 保本系数", minval=1.0, step=0.0005, group=longTrailGroup)
+float longPrincipalRR         = input.float(1.2, "多单 principalRR", minval=0, step=0.1, group=longTrailGroup)
+
+string longExitGroup = "多单-指标止盈开关"
+float longRR_forOpenExitCondition = input.float(4, "多单 RR_forOpenExitCondition", minval=0, step=0.1, group=longExitGroup)
+bool longEnableExitCondition1 = input.bool(false, "多单：收盘价 < SuperTrend下沿", group=longExitGroup)
+bool longEnableExitCondition2 = input.bool(false, "多单：SSL1上轨 < SSL2下轨", group=longExitGroup)
+bool longEnableExitCondition3 = input.bool(false, "多单：收盘价 < SSL2下轨", group=longExitGroup)
+bool longEnableExitCondition4 = input.bool(false, "多单：qqe_mod拐头向下", group=longExitGroup)
+
+// ==========================================================================================
+// 空单：止盈止损/移动止损参数（独立）
+// ==========================================================================================
+string shortSlTpGroup = "空单-止盈止损参数"
+float shortRiskRewardRatio = input.float(9.0, "空单 最大盈亏比(R:R)", minval=0.1, step=0.1, group=shortSlTpGroup)
+
+string shortTrailGroup = "空单-移动止损参数"
+bool  enableShortTrailingStop  = input.bool(true, "空单 启用移动止损", group=shortTrailGroup)
+float shortBreakevenFactor     = input.float(0.999, "空单 保本系数", minval=0.0, step=0.0005, group=shortTrailGroup)
+float shortPrincipalRR         = input.float(1.2, "空单 principalRR", minval=0, step=0.1, group=shortTrailGroup)
+
+string shortExitGroup = "空单-指标止盈开关"
+float shortRR_forOpenExitCondition = input.float(4, "空单 RR_forOpenExitCondition", minval=0, step=0.1, group=shortExitGroup)
+bool shortEnableExitCondition1 = input.bool(false, "空单：收盘价 > SuperTrend上沿", group=shortExitGroup)
+bool shortEnableExitCondition2 = input.bool(false, "空单：SSL1下轨 > SSL2上轨", group=shortExitGroup)
+bool shortEnableExitCondition3 = input.bool(false, "空单：收盘价 > SSL2上轨", group=shortExitGroup)
+bool shortEnableExitCondition4 = input.bool(false, "空单：qqe_mod拐头向上", group=shortExitGroup)
+
+// ==========================================================================================
+// 辅助函数
+// ==========================================================================================
+macdMA(float source, int length, string maType) =>
+    maType == "EMA" ? ta.ema(source, length) : ta.sma(source, length)
+
+sslCalc(int period, int length, float prevHlv) =>
+    float smaHigh = ta.sma(high, length)
+    float smaLow  = ta.sma(low,  length)
+    float hlv     = close > smaHigh ? 1 : close < smaLow ? -1 : prevHlv
+    float sslDown = hlv < 0 ? smaHigh : smaLow
+    float sslUp   = hlv < 0 ? smaLow  : smaHigh
+    [sslUp, sslDown, hlv]
+
+superTrendCalc(int atrPeriod, float multiplier, bool changeATR, float source, int prevTrend, float prevUp, float prevDn) =>
+    float atr2 = ta.sma(ta.tr, atrPeriod)
+    float atr  = changeATR ? ta.atr(atrPeriod) : atr2
+    float up   = source - (multiplier * atr)
+    float up1  = na(prevUp) ? up : prevUp
+    up         := close[1] > up1 ? math.max(up, up1) : up
+    float dn   = source + (multiplier * atr)
+    float dn1  = na(prevDn) ? dn : prevDn
+    dn         := close[1] < dn1 ? math.min(dn, dn1) : dn
+    int trend  = na(prevTrend) ? 1 : prevTrend
+    trend      := trend == -1 and close > dn1 ? 1 : trend == 1 and close < up1 ? -1 : trend
+    [trend == 1 ? up : dn, trend, up, dn]
+
+calculateQQE(int rsiLength, int smoothingFactor, float qqeFactor, float source, float prevLongBand, float prevShortBand, int prevTrendDirection) =>
+    int   wildersLength   = rsiLength * 2 - 1
+    float rsi             = ta.rsi(source, rsiLength)
+    float smoothedRsi     = ta.ema(rsi, smoothingFactor)
+    float atrRsi          = math.abs(smoothedRsi[1] - smoothedRsi)
+    float smoothedAtrRsi  = ta.ema(atrRsi, wildersLength)
+    float dynamicAtrRsi   = smoothedAtrRsi * qqeFactor
+    float longBand        = na(prevLongBand)  ? 0.0 : prevLongBand
+    float shortBand       = na(prevShortBand) ? 0.0 : prevShortBand
+    int   trendDirection  = na(prevTrendDirection) ? 0 : prevTrendDirection
+    float atrDelta        = dynamicAtrRsi
+    float newShortBand    = smoothedRsi + atrDelta
+    float newLongBand     = smoothedRsi - atrDelta
+    longBand  := smoothedRsi[1] > longBand[1]  and smoothedRsi > longBand[1]  ? math.max(longBand[1],  newLongBand)  : newLongBand
+    shortBand := smoothedRsi[1] < shortBand[1] and smoothedRsi < shortBand[1] ? math.min(shortBand[1], newShortBand) : newShortBand
+    bool longBandCross    = ta.cross(longBand[1], smoothedRsi)
+    if ta.cross(smoothedRsi, shortBand[1])
+        trendDirection := 1
+    else if longBandCross
+        trendDirection := -1
+    else
+        trendDirection := trendDirection[1]
+    float qqeTrendLine = trendDirection == 1 ? longBand : shortBand
+    [qqeTrendLine, smoothedRsi, longBand, shortBand, trendDirection]
+
+// ==========================================================================================
+// 指标计算
+// ==========================================================================================
+var float ssl1Hlv = na
+var float ssl2Hlv = na
+
+var int   stTrend = 1
+var float stUp    = na
+var float stDn    = na
+
+var float primaryLongBand       = 0.0
+var float primaryShortBand      = 0.0
+var int   primaryTrendDirection = 0
+var float secondaryLongBand     = 0.0
+var float secondaryShortBand    = 0.0
+var int   secondaryTrendDirection = 0
+
+// SuperTrend
+[stValue, stTrendNew, stUpNew, stDnNew] = superTrendCalc(stATRPeriod, stMultiplier, stChangeATR, stSource, stTrend[1], stUp[1], stDn[1])
+stTrend := stTrendNew
+stUp    := stUpNew
+stDn    := stDnNew
+bool  stIsBullish = stTrend == 1
+float stLower     = stIsBullish ? stUp : na
+float stUpper     = stIsBullish ? na   : stDn
+
+// SSL1/SSL2
+[ssl1Up, ssl1Down, ssl1HlvNew] = sslCalc(ssl1Period, ssl1Length, na(ssl1Hlv[1]) ? na : ssl1Hlv[1])
+ssl1Hlv := ssl1HlvNew
+[ssl2Up, ssl2Down, ssl2HlvNew] = sslCalc(ssl2Period, ssl2Length, na(ssl2Hlv[1]) ? na : ssl2Hlv[1])
+ssl2Hlv := ssl2HlvNew
+bool ssl2SlopeUp   = ssl2Up >= ssl2Up[1] and ssl2Up[1] >= ssl2Up[2]
+bool ssl2SlopeDown = ssl2Down <= ssl2Down[1] and ssl2Down[1] <= ssl2Down[2]
+
+// MACD
+float macdFast   = macdMA(macdSource, macdFastLen, macdOscType)
+float macdSlow   = macdMA(macdSource, macdSlowLen, macdOscType)
+float macd       = macdFast - macdSlow
+float macdSignal = macdMA(macd, macdSigLen, macdSigType)
+float macdHist   = macd - macdSignal
+
+bool macdConditionIncreasing = macdHist[2] < macdHist[1] and macdHist[1] < macdHist
+bool macdConditionVShape     = macdHist[2] > macdHist[1] and macdHist[1] < macdHist
+bool macdConditionLong       = macdConditionIncreasing or macdConditionVShape
+
+bool macdConditionDecreasing = macdHist[2] > macdHist[1] and macdHist[1] > macdHist
+bool macdConditionVTop       = macdHist[2] < macdHist[1] and macdHist[1] > macdHist
+bool macdConditionShort      = macdConditionDecreasing or macdConditionVTop
+
+// QQE
+[primaryQQETrendLine, primaryRSI, primaryLongBandNew, primaryShortBandNew, primaryTrendDirectionNew] = calculateQQE(qqeRSILengthPrimary, qqeRSISmoothingPrimary, qqeFactorPrimary, qqeSource,
+                 primaryLongBand[1], primaryShortBand[1], primaryTrendDirection[1])
+primaryLongBand       := primaryLongBandNew
+primaryShortBand      := primaryShortBandNew
+primaryTrendDirection := primaryTrendDirectionNew
+
+[secondaryQQETrendLine, secondaryRSI, secondaryLongBandNew, secondaryShortBandNew, secondaryTrendDirectionNew] = calculateQQE(qqeRSILengthSecondary, qqeRSISmoothingSecondary, qqeFactorSecondary, qqeSource,
+                 secondaryLongBand[1], secondaryShortBand[1], secondaryTrendDirection[1])
+secondaryLongBand      := secondaryLongBandNew
+secondaryShortBand     := secondaryShortBandNew
+secondaryTrendDirection := secondaryTrendDirectionNew
+
+float secondaryQQETrendLineValue = secondaryQQETrendLine - 50
+
+// QQE 值/白线
+float qqeValue0 = secondaryRSI - 50
+float qqeValue1 = secondaryRSI[1] - 50
+float qqeValue2 = secondaryRSI[2] - 50
+
+float whiteLine0 = secondaryQQETrendLineValue
+float whiteLine1 = secondaryQQETrendLineValue[1]
+float whiteLine2 = secondaryQQETrendLineValue[2]
+
+// ==========================================================================================
+// 多单：回调条件
+// ==========================================================================================
+float minValue = 999999.0
+if not na(qqeValue0) and qqeValue0 < minValue
+    minValue := qqeValue0
+if not na(qqeValue1) and qqeValue1 < minValue
+    minValue := qqeValue1
+if not na(qqeValue2) and qqeValue2 < minValue
+    minValue := qqeValue2
+bool minIsLessOrEqualZero = minValue <= 0
+
+bool whiteLineTurningUp   = not na(whiteLine2) and not na(whiteLine1) and not na(whiteLine0) and whiteLine2 > whiteLine1 and whiteLine1 < whiteLine0
+bool whiteLineIncreasing1 = not na(whiteLine2) and not na(whiteLine1) and not na(whiteLine0) and whiteLine2 < whiteLine1 and whiteLine1 < whiteLine0 and whiteLine0 < 20
+bool whiteLineCondition   = whiteLineTurningUp or whiteLineIncreasing1
+bool callbackCondition1   = minIsLessOrEqualZero and whiteLineCondition
+
+bool klineCrossSSL2      = ta.crossover(close, ssl2Up)
+float qqeValueCurrent    = secondaryRSI - 50
+float qqeValuePrev       = secondaryRSI[1] - 50
+bool qqeValueIncreasing2 = not na(qqeValuePrev) and not na(qqeValueCurrent) and qqeValuePrev < qqeValueCurrent and qqeValueCurrent > -20
+bool whiteLineIncreasing = not na(whiteLine1) and not na(whiteLine0) and whiteLine1 < whiteLine0
+bool callbackCondition2  = klineCrossSSL2 and qqeValueIncreasing2 and whiteLineIncreasing
+
+bool callbackConditionLong   = callbackCondition1 or callbackCondition2
+bool entryBaseConditionLong  = ssl2SlopeUp and ssl1Up >= ssl2Down and (na(stLower) ? false : (ssl1Down > ssl2Down ? true : ssl2Down >= stLower))
+
+// ==========================================================================================
+// 空单：回调条件（不使用镜像数据）
+// ==========================================================================================
+float maxValue = -999999.0
+if not na(qqeValue0) and qqeValue0 > maxValue
+    maxValue := qqeValue0
+if not na(qqeValue1) and qqeValue1 > maxValue
+    maxValue := qqeValue1
+if not na(qqeValue2) and qqeValue2 > maxValue
+    maxValue := qqeValue2
+bool maxIsGreaterOrEqualZero = maxValue >= 0
+
+bool shortWhiteTurningDown   = not na(whiteLine2) and not na(whiteLine1) and not na(whiteLine0) and whiteLine2 < whiteLine1 and whiteLine1 > whiteLine0
+bool shortWhiteDecreasingLow = not na(whiteLine2) and not na(whiteLine1) and not na(whiteLine0) and whiteLine2 > whiteLine1 and whiteLine1 > whiteLine0 and whiteLine0 > -20
+bool shortWhiteCondition     = shortWhiteTurningDown or shortWhiteDecreasingLow
+bool shortCallback1          = maxIsGreaterOrEqualZero and shortWhiteCondition
+
+bool klineCrossSSL2Short     = ta.crossunder(close, ssl2Down)
+float qqeCurr = qqeValue0
+float qqePrev = qqeValue1
+bool qqeDecreasing2          = not na(qqePrev) and not na(qqeCurr) and qqePrev > qqeCurr and qqeCurr < 20
+bool whiteLineDecreasing2    = not na(whiteLine1) and not na(whiteLine0) and whiteLine1 > whiteLine0
+bool shortCallback2          = klineCrossSSL2Short and qqeDecreasing2 and whiteLineDecreasing2
+
+bool callbackConditionShort  = shortCallback1 or shortCallback2
+bool entryBaseConditionShort = ssl2SlopeDown and ssl1Down <= ssl2Up and (na(stUpper) ? false : (ssl1Up < ssl2Up ? true : ssl2Up <= stUpper))
+
+// ==========================================================================================
+// 准备状态（互斥）
+// ==========================================================================================
+var bool readyBuy  = false
+var bool readySell = false
+if stTrend == 1
+    readyBuy  := true
+    readySell := false
+else if stTrend == -1
+    readyBuy  := false
+    readySell := true
+
+bool noPosition = strategy.position_size == 0 and strategy.opentrades == 0
+bool longEntryCondition  = enableLong  and noPosition and readyBuy  and entryBaseConditionLong  and callbackConditionLong  and macdConditionLong  and not na(ssl1Down) and not na(ssl2Down)
+bool shortEntryCondition = enableShort and noPosition and readySell and entryBaseConditionShort and callbackConditionShort and macdConditionShort and not na(ssl1Up)   and not na(ssl2Up)
+
+// ==========================================================================================
+// 多单/空单变量
+// ==========================================================================================
+var float longEntryPrice      = na
+var float longStopLoss        = na
+var float longInitialStopLoss = na
+var float longTakeProfit      = na
+var bool  longEntryExecuted   = false
+var bool  longReachedPrincipalRRState = false
+var bool  longReachedExitRRState      = false
+var bool  longTP1Executed             = false
+var bool  longTP2Executed             = false
+
+var float shortEntryPrice      = na
+var float shortStopLoss        = na
+var float shortInitialStopLoss = na
+var float shortTakeProfit      = na
+var bool  shortEntryExecuted   = false
+var bool  shortReachedPrincipalRRState = false
+var bool  shortReachedExitRRState      = false
+var bool  shortTP1Executed             = false
+var bool  shortTP2Executed             = false
+
+var box[] longBoxes  = array.new_box()
+var box[] shortBoxes = array.new_box()
+
+// 平仓后统一重置
+bool positionClosed = strategy.position_size[1] != 0 and strategy.position_size == 0
+if positionClosed
+    longEntryExecuted   := false
+    longEntryPrice      := na
+    longStopLoss        := na
+    longInitialStopLoss := na
+    longTakeProfit      := na
+    longReachedPrincipalRRState := false
+    longReachedExitRRState      := false
+    longTP1Executed             := false
+    longTP2Executed             := false
+
+    shortEntryExecuted   := false
+    shortEntryPrice      := na
+    shortStopLoss        := na
+    shortInitialStopLoss := na
+    shortTakeProfit      := na
+    shortReachedPrincipalRRState := false
+    shortReachedExitRRState      := false
+    shortTP1Executed             := false
+    shortTP2Executed             := false
+
+// ==========================================================================================
+// 多单入场：初始SL/TP（不合法则放弃这一单）
+// ==========================================================================================
+if longEntryCondition
+    float entryPrice = close
+
+    float slCandidate = math.min(ssl1Down, ssl2Down)
+    bool  slOk = not na(slCandidate) and slCandidate < entryPrice
+
+    if not slOk
+        slCandidate := stLower
+        slOk := not na(slCandidate) and slCandidate < entryPrice
+
+    if slOk
+        float risk = entryPrice - slCandidate
+        float tp   = entryPrice + risk * longRiskRewardRatio
+
+        bool tpOk = risk > 0 and tp > entryPrice
+
+        if tpOk
+            longEntryPrice    := entryPrice
+            longStopLoss      := slCandidate
+            longInitialStopLoss := slCandidate
+            longTakeProfit    := tp
+
+            longEntryExecuted := true
+            longReachedPrincipalRRState := false
+            longReachedExitRRState      := false
+            longTP1Executed             := false
+            longTP2Executed             := false
+
+            box b = box.new(bar_index, longTakeProfit, bar_index + 10, longStopLoss,
+                 border_color=color.new(color.white, 0), border_width=1, bgcolor=color.new(color.white, 90), extend=extend.none)
+            array.push(longBoxes, b)
+
+            strategy.entry("Long", strategy.long, comment="做多")
+
+// ==========================================================================================
+// 空单入场：初始SL/TP + 画白框（不合法则放弃这一单）
+// ==========================================================================================
+if shortEntryCondition
+    float entryPrice = close
+
+    float slCandidate = math.max(ssl1Up, ssl2Up)
+    bool  slOk = not na(slCandidate) and slCandidate > entryPrice
+
+    if not slOk
+        slCandidate := stUpper
+        slOk := not na(slCandidate) and slCandidate > entryPrice
+
+    if slOk
+        float risk = slCandidate - entryPrice
+        float tp   = entryPrice - risk * shortRiskRewardRatio
+
+        bool tpOk = risk > 0 and tp < entryPrice
+
+        if tpOk
+            shortEntryPrice      := entryPrice
+            shortStopLoss        := slCandidate
+            shortInitialStopLoss := slCandidate
+            shortTakeProfit      := tp
+
+            shortEntryExecuted := true
+            shortReachedPrincipalRRState := false
+            shortReachedExitRRState      := false
+            shortTP1Executed             := false
+            shortTP2Executed             := false
+
+            // 空单白色框：上边界=SL，下边界=TP
+            box sb = box.new(bar_index, shortStopLoss, bar_index + 10, shortTakeProfit,
+                 border_color=color.new(color.white, 0), border_width=1, bgcolor=color.new(color.white, 90), extend=extend.none)
+            array.push(shortBoxes, sb)
+
+            strategy.entry("Short", strategy.short, comment="做空")
+
+// ==========================================================================================
+// 多单：移动止损 + 分批止盈（独立参数）
+// ==========================================================================================
+if enableLongTrailingStop and strategy.position_size > 0 and longEntryExecuted and not na(longEntryPrice) and not na(longStopLoss) and not na(longInitialStopLoss)
+    float currentProfitHigh     = high - longEntryPrice
+    float initialRiskAmountLong = longEntryPrice - longInitialStopLoss
+    float currentRRHigh         = initialRiskAmountLong > 0 ? currentProfitHigh / initialRiskAmountLong : 0.0
+    float breakevenSL           = longEntryPrice * longBreakevenFactor
+
+    if currentRRHigh >= longPrincipalRR
+        longReachedPrincipalRRState := true
+
+    if longReachedPrincipalRRState and not longTP1Executed
+        strategy.close("Long", qty_percent=33, comment="Long TP1 principalRR")
+        longTP1Executed := true
+
+    if longReachedPrincipalRRState and breakevenSL > longStopLoss
+        longStopLoss := breakevenSL
+
+    if currentRRHigh >= longRR_forOpenExitCondition
+        longReachedExitRRState := true
+
+    if longReachedExitRRState
+        float trailBase = breakevenSL
+        if not na(stLower)
+            trailBase := math.max(trailBase, stLower)
+        if trailBase > longStopLoss
+            longStopLoss := trailBase
+
+    if longStopLoss < longInitialStopLoss
+        longStopLoss := longInitialStopLoss
+
+// ==========================================================================================
+// 空单：移动止损 + 分批止盈（独立参数）
+// ==========================================================================================
+if enableShortTrailingStop and strategy.position_size < 0 and shortEntryExecuted and not na(shortEntryPrice) and not na(shortStopLoss) and not na(shortInitialStopLoss)
+    float currentProfitLow        = shortEntryPrice - low
+    float initialRiskAmountShort  = shortInitialStopLoss - shortEntryPrice
+    float currentRRShortHigh      = initialRiskAmountShort > 0 ? currentProfitLow / initialRiskAmountShort : 0.0
+
+    // 空单保本：factor < 1 => breakeven 在 entry 下方一点
+    float breakevenSLShort        = shortEntryPrice * shortBreakevenFactor
+
+    if currentRRShortHigh >= shortPrincipalRR
+        shortReachedPrincipalRRState := true
+
+    if shortReachedPrincipalRRState and not shortTP1Executed
+        strategy.close("Short", qty_percent=33, comment="Short TP1 principalRR")
+        shortTP1Executed := true
+
+    if shortReachedPrincipalRRState and breakevenSLShort < shortStopLoss
+        shortStopLoss := breakevenSLShort
+
+    if currentRRShortHigh >= shortRR_forOpenExitCondition
+        shortReachedExitRRState := true
+
+    if shortReachedExitRRState
+        float shortTrailBase = breakevenSLShort
+        if not na(stUpper)
+            shortTrailBase := math.min(shortTrailBase, stUpper)
+        if shortTrailBase < shortStopLoss
+            shortStopLoss := shortTrailBase
+
+    if shortStopLoss > shortInitialStopLoss
+        shortStopLoss := shortInitialStopLoss
+
+// ==========================================================================================
+// 多单：指标止盈触发 TP2（独立参数）
+// ==========================================================================================
+bool whiteLineTurningDown = not na(whiteLine2) and not na(whiteLine1) and not na(whiteLine0) and whiteLine2 < whiteLine1 and whiteLine1 > whiteLine0 and whiteLine1 > 20
+bool whiteLineReduce      = qqeValue2 < qqeValue1 and qqeValue1 > qqeValue0 and whiteLine1 > 20
+
+bool exitCondition1Long = longEnableExitCondition1 and strategy.position_size > 0 and not na(stLower) and close < stLower
+bool exitCondition2Long = longEnableExitCondition2 and strategy.position_size > 0 and ssl1Up < ssl2Down
+bool exitCondition3Long = longEnableExitCondition3 and strategy.position_size > 0 and close < ssl2Down
+bool exitCondition4Long = longEnableExitCondition4 and strategy.position_size > 0 and (whiteLineTurningDown or whiteLineReduce)
+bool anyExitConditionLong = exitCondition1Long or exitCondition2Long or exitCondition3Long or exitCondition4Long
+
+if anyExitConditionLong and strategy.position_size > 0 and longEntryExecuted
+    float currentProfitClose     = close - longEntryPrice
+    float initialRiskAmountLong2 = longEntryPrice - longInitialStopLoss
+    float currentRRClose         = initialRiskAmountLong2 > 0 ? currentProfitClose / initialRiskAmountLong2 : 0.0
+    if longReachedExitRRState and not longTP2Executed and currentRRClose >= longRR_forOpenExitCondition
+        strategy.close("Long", qty_percent=33, comment="Long TP2 indicator")
+        longTP2Executed := true
+
+// ==========================================================================================
+// 空单：指标止盈触发 TP2（独立参数，使用原始 whiteLine/qqeValue）
+// ==========================================================================================
+bool shortWhiteLineTurningUp = not na(whiteLine2) and not na(whiteLine1) and not na(whiteLine0) and whiteLine2 > whiteLine1 and whiteLine1 < whiteLine0 and whiteLine1 < -20
+bool shortWhiteLineBoost     = qqeValue2 > qqeValue1 and qqeValue1 < qqeValue0 and whiteLine1 < -20
+
+bool exitCondition1Short = shortEnableExitCondition1 and strategy.position_size < 0 and not na(stUpper) and close > stUpper
+bool exitCondition2Short = shortEnableExitCondition2 and strategy.position_size < 0 and ssl1Down > ssl2Up
+bool exitCondition3Short = shortEnableExitCondition3 and strategy.position_size < 0 and close > ssl2Up
+bool exitCondition4Short = shortEnableExitCondition4 and strategy.position_size < 0 and (shortWhiteLineTurningUp or shortWhiteLineBoost)
+bool anyExitConditionShort = exitCondition1Short or exitCondition2Short or exitCondition3Short or exitCondition4Short
+
+if anyExitConditionShort and strategy.position_size < 0 and shortEntryExecuted
+    float currentProfitShortClose = shortEntryPrice - close
+    float initialRiskAmountShort2 = shortInitialStopLoss - shortEntryPrice
+    float currentRRShortClose     = initialRiskAmountShort2 > 0 ? currentProfitShortClose / initialRiskAmountShort2 : 0.0
+    if shortReachedExitRRState and not shortTP2Executed and currentRRShortClose >= shortRR_forOpenExitCondition
+        strategy.close("Short", qty_percent=33, comment="Short TP2 indicator")
+        shortTP2Executed := true
+
+// ==========================================================================================
+// 执行止盈/止损（分方向独立参数）
+// ==========================================================================================
+if strategy.position_size > 0 and longEntryExecuted and not na(longStopLoss) and not na(longTakeProfit)
+    strategy.exit("Long SLTP", from_entry="Long", stop=longStopLoss, limit=longTakeProfit)
+
+if strategy.position_size < 0 and shortEntryExecuted and not na(shortStopLoss) and not na(shortTakeProfit)
+    strategy.exit("Short SLTP", from_entry="Short", stop=shortStopLoss, limit=shortTakeProfit)
+
+// ==========================================================================================
+// 可视化
+// ==========================================================================================
+plot(stLower, "SuperTrend下沿", color=color.new(color.green, 0), linewidth=2, style=plot.style_linebr)
+plot(stUpper, "SuperTrend上沿", color=color.new(color.red,   0), linewidth=2, style=plot.style_linebr)
+plot(ssl1Up,   "SSL1上轨", color=color.new(color.green,  0), linewidth=1)
+plot(ssl1Down, "SSL1下轨", color=color.new(color.green,  0), linewidth=1)
+plot(ssl2Up,   "SSL2上轨", color=color.new(color.orange, 0), linewidth=1)
+plot(ssl2Down, "SSL2下轨", color=color.new(color.orange,0), linewidth=1)

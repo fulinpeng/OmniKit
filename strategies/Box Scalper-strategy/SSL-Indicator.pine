@@ -1,0 +1,48 @@
+//@version=5
+indicator(title='SSL Channel', shorttitle='SSL', overlay=true)
+
+// ==========================================================================================
+// 指标名称：SSL Channel（SSL通道）
+// 指标类型：主图叠加指标
+// 指标描述：基于Hull移动平均的通道指标，用于判断趋势方向
+// ==========================================================================================
+//
+// 指标说明：
+// - SSL线根据趋势方向动态切换：
+//   - 上涨趋势：显示低点的HMA（Hull移动平均）
+//   - 下跌趋势：显示高点的HMA
+// - 颜色变化：
+//   - 收盘价 > SSL：蓝色（看涨）
+//   - 收盘价 < SSL：红色（看跌）
+// - 趋势判断：
+//   - 收盘价 > SSL：处于上涨趋势
+//   - 收盘价 < SSL：处于下跌趋势
+//
+// ==========================================================================================
+
+// SSL 函数：SSL（SSL Channel）指标，用于判断趋势方向
+// 参数：length - 计算周期
+fn_ssl(length) =>
+    hh = ta.hma(high, length)                   // 高点的HMA（Hull移动平均）
+    ll = ta.hma(low, length)                     // 低点的HMA
+
+    hlv = int(na)                                // 趋势方向（1=上涨，-1=下跌）
+    // 判断趋势：收盘价高于高点的HMA为上涨，低于低点的HMA为下跌，否则保持上一根K线的方向
+    hlv := close > hh ? 1 : close < ll ? -1 : hlv[1]
+    // SSL线：下跌趋势时显示高点的HMA，上涨趋势时显示低点的HMA
+    ssl = hlv < 0 ? hh : ll
+    ssl
+
+// =================================================================================================
+
+SSL_Group       = 'SSL'
+SSL_Length      = input.int(55,             title='Length',         group=SSL_Group,        minval=1,       step=10)
+
+SSL = fn_ssl(SSL_Length)
+
+// 根据收盘价与SSL的关系设置颜色
+SSL_color = close > SSL ? #00c3ff : close < SSL ? #ff0062 : na
+
+// 绘制SSL线
+plot(SSL, title='SSL', linewidth=3, color=SSL_color)
+

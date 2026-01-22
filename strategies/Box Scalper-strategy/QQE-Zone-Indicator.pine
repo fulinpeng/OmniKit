@@ -1,0 +1,134 @@
+//@version=5
+indicator(title='QQE Zone (ZigZag & Support/Resistance)', shorttitle='QQE Zone', overlay=true)
+
+// ==========================================================================================
+// 指标名称：QQE Zone（QQE区域指标）
+// 指标类型：主图叠加指标
+// 指标描述：基于QQE方向的ZigZag指标和支撑/阻力位识别
+// ==========================================================================================
+//
+// 指标说明：
+// - ZigZag线：根据QQE方向变化绘制，用于识别趋势转折点
+//   - 绿色：强制上涨信号（qqe_was_force_up）
+//   - 红色：强制下跌信号（qqe_was_force_dn）
+//   - 黑色：普通信号
+// - 支撑位（zz_bot）：黄色十字标记，用于做多止损参考
+// - 阻力位（zz_top）：青色十字标记，用于做空止损参考
+// - 强制信号：
+//   - qqe_was_force_up：QQE下跌信号且距离上次QQE上涨的时间 >= 距离上次RSI超买的时间
+//   - qqe_was_force_dn：QQE上涨信号且距离上次QQE下跌的时间 >= 距离上次RSI超卖的时间
+//
+// ==========================================================================================
+
+// RSI 函数：计算多时间框架相对强弱指标
+// 参数：src - 数据源，len - RSI长度，mtf - 多时间框架倍数
+fn_rsi(src, len, mtf)=>
+    change = src - src[mtf]                    // 计算当前值与mtf周期前的差值
+
+    up = math.max(change, 0)                   // 上涨幅度（只取正值）
+    dn =-math.min(change, 0)                   // 下跌幅度（只取正值，取负号转为正）
+
+    up_change = ta.rma(up, (len * mtf))        // 上涨幅度的RMA（递归移动平均）
+    dn_change = ta.rma(dn, (len * mtf))        // 下跌幅度的RMA
+
+    // 计算RSI：RSI = 100 - (100 / (1 + RS))，其中RS = 平均上涨 / 平均下跌
+    rsi = dn_change == 0 ? 100 : up_change == 0 ? 0 : 100 - (100 / (1 + up_change / dn_change))
+    rsi
+
+// QQE 函数：Quantitative Qualitative Estimation（定量定性估计）指标
+// 默认参数：14, 5, 8, 4.3
+// 参数：len - RSI长度，mtf - 多时间框架倍数，smooth - 平滑周期，mult - 倍数
+fn_qqe(len, mtf, smooth, mult)=>
+    wilders = len * 2 - 1                      // Wilder's 平滑周期
+
+    // 上涨方向的计算
+    up = 0.0                                    // 上涨信号线
+    up_rsi = fn_rsi(low, len, mtf)              // 基于低点的RSI
+    up_ema = ta.ema(up_rsi, smooth)             // RSI的EMA平滑
+    up_atr = math.abs(up_ema[1] - up_ema)       // EMA的变化幅度（ATR）
+    up_diff = ta.ema(ta.ema(up_atr, wilders), wilders) * mult  // 双重EMA平滑后的差值乘以倍数
+    up_ma = up_ema - up_diff                    // 上涨信号线的基础值
+    // 如果EMA持续上升，则取最大值；否则使用基础值
+    up := up_ema[1] > up[1] and up_ema > up[1] ? math.max(up_ma, up[1]) : up_ma
+
+    // 下跌方向的计算
+    dn = 0.0                                    // 下跌信号线
+    dn_rsi = fn_rsi(high, len, mtf)             // 基于高点的RSI
+    dn_ema = ta.ema(dn_rsi, smooth)             // RSI的EMA平滑
+    dn_atr = math.abs(dn_ema[1] - dn_ema)       // EMA的变化幅度（ATR）
+    dn_diff = ta.ema(ta.ema(dn_atr, wilders), wilders) * mult  // 双重EMA平滑后的差值乘以倍数
+    dn_ma = dn_ema + dn_diff                    // 下跌信号线的基础值
+    // 如果EMA持续下降，则取最小值；否则使用基础值
+    dn := dn_ema[1] < dn[1] and dn_ema < dn[1] ? math.min(dn_ma, dn[1]) : dn_ma
+
+    // 检测QQE信号：当下跌EMA上穿下跌信号线时产生上涨信号，当上涨EMA下穿上涨信号线时产生下跌信号
+    qqe_up = dn_ema > dn[1] and dn_ema[1] <= dn[2]  // 上涨信号：下跌EMA上穿下跌信号线
+    qqe_dn = up_ema < up[1] and up_ema[1] >= up[2]  // 下跌信号：上涨EMA下穿上涨信号线
+    [qqe_up, qqe_dn]
+
+// ZigZag 函数：根据动量方向绘制ZigZag线
+fn_zigzag(_momentum_direction) =>
+    zz_goingup = _momentum_direction == 1
+    zz_goingdown = _momentum_direction == -1
+    zz_peak = float(na)
+    zz_bottom = float(na)
+    zz_peak := high > zz_peak[1] and zz_goingup or zz_goingdown[1] ? high : nz(zz_peak[1])
+    zz_bottom := low < zz_bottom[1] and zz_goingdown or zz_goingup[1] ? low : nz(zz_bottom[1])
+    zigzag = zz_goingup and zz_goingdown[1] ? zz_bottom[1] : zz_goingup[1] and zz_goingdown ? zz_peak[1] : na
+    zigzag
+
+// =================================================================================================
+
+QQE_Group       = 'QQE'
+QQE_Length      = input.int(14,             title='RSI Length',     group=QQE_Group,        minval=1,       step=1)
+QQE_Mtf         = input.int(5,              title='MTF Mult',       group=QQE_Group,        minval=1,       step=1)
+QQE_Smooth      = input.int(8,              title='RSI Smooth',     group=QQE_Group,        minval=1,       step=1)
+QQE_Mult        = input.float(4.3,          title='QQE Mult',       group=QQE_Group,        minval=1,       step=0.1)
+
+[QQE_up, QQE_dn] = fn_qqe(QQE_Length, QQE_Mtf, QQE_Smooth, QQE_Mult)
+
+QQE_direction = 0
+QQE_direction := QQE_up ? 1 : QQE_dn ? -1 : nz(QQE_direction[1])
+
+// =================================================================================================
+
+ZON_Group       = 'QQE ZONE'
+ZON_Length      = input.int(5,              title='Length',         group=ZON_Group,        minval=1,       step=1)
+ZON_Upper       = input.float(75,           title='Upper',          group=ZON_Group,        minval=0,       step=1)
+ZON_Lower       = input.float(22,           title='Lower',          group=ZON_Group,        minval=0,       step=1)
+
+qqe_rsi = ta.rsi(close, ZON_Length)
+barssince_qqe_up = ta.barssince(QQE_up)
+barssince_qqe_dn = ta.barssince(QQE_dn)
+
+barssince_rsi_up = ta.barssince(qqe_rsi > ZON_Upper)
+barssince_rsi_dn = ta.barssince(qqe_rsi < ZON_Lower)
+qqe_was_force_up = QQE_dn and barssince_qqe_up[1] >= barssince_rsi_up[1]
+qqe_was_force_dn = QQE_up and barssince_qqe_dn[1] >= barssince_rsi_dn[1]
+
+// ZigZag颜色：强制上涨=绿色，强制下跌=红色，其他=黑色
+zzcolor = qqe_was_force_up ? color.lime : qqe_was_force_dn ? color.red : color.black
+
+ZigZag = fn_zigzag(QQE_direction)
+plot(ZigZag, linewidth=2, color=zzcolor, title='ZigZag', style=plot.style_line)
+
+// =================================================================================================
+
+// 支撑位和阻力位计算
+var float zz_top = high
+var float zz_bot = low
+
+pl = ta.valuewhen(not na(QQE_up) and QQE_up, ZigZag, 0)
+ph = ta.valuewhen(not na(QQE_dn) and QQE_dn, ZigZag, 0)
+
+if QQE_dn
+    zz_top := nz(high > ph ? high : ph, zz_top[1])
+if QQE_up
+    zz_bot := nz(low < pl ? low : pl, zz_bot[1])
+
+// 绘制阻力位（青色十字）
+plot(zz_top, color=color.aqua, style=plot.style_cross, title='Resistance', linewidth=2)
+
+// 绘制支撑位（黄色十字）
+plot(zz_bot, color=color.yellow, style=plot.style_cross, title='Support', linewidth=2)
+

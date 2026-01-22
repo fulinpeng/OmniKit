@@ -1,0 +1,53 @@
+//@version=6
+indicator("Apirine Slow RSI [LazyBear] EMA7 & EMA30", shorttitle="ASRSI_EMA7_30", overlay=false, precision=3)
+
+// ==========================================================================================
+// 参数
+// ==========================================================================================
+periods = input.int(6,  title="Smoothing", minval=1)
+smooth  = input.int(14, title="RSI Length", minval=1)
+price   = input.source(close, title="Source")
+ema1Len = input.int(7,  title="ema1Len", minval=1)
+ema2Len = input.int(30, title="ema2Len", minval=1)
+
+// ==========================================================================================
+// WIMA（修复版，Pine v6 合法）
+// ==========================================================================================
+calc_wima(src, length) =>
+    var float ma = na
+    ma := na(ma[1]) ? src : (src + ma[1] * (length - 1)) / length
+    ma
+
+// ==========================================================================================
+// Slow RSI 核心计算
+// ==========================================================================================
+r1 = ta.ema(price, periods)
+r2 = price > r1 ? price - r1 : 0.0
+r3 = price < r1 ? r1 - price : 0.0
+
+r4 = calc_wima(r2, smooth)
+r5 = calc_wima(r3, smooth)
+
+rr = r5 == 0 ? 100.0 : 100.0 - (100.0 / (1.0 + (r4 / r5)))
+
+// ==========================================================================================
+// EMA 曲线
+// ==========================================================================================
+ema7  = ta.ema(rr, ema1Len)
+ema30 = ta.ema(rr, ema2Len)
+
+// ==========================================================================================
+// 可视化
+// ==========================================================================================
+
+// 原始 Slow RSI
+plot(rr, "SlowRSI", color=color.red, linewidth=1)
+
+hOB = hline(70, "OB", color=color.gray)
+hOS = hline(30, "OS", color=color.gray)
+fill(hOB, hOS, color=color.new(color.gray, 80))
+hline(50, "Mid", color=color.gray)
+
+// 只画 EMA7 / EMA30
+plot(ema7,  "EMA 7",  color=color.blue,   linewidth=2)
+plot(ema30, "EMA 30", color=color.orange, linewidth=2)

@@ -1,0 +1,297 @@
+//@version=6
+strategy("Smart Money Breakouts Strategy", overlay=true, default_qty_type=strategy.percent_of_equity, default_qty_value=100, commission_type=strategy.commission.percent, commission_value=0.04, max_labels_count=500, max_lines_count=500)
+
+// ==========================================================================================
+//                                     策略说明
+// ==========================================================================================
+// 策略名称：Smart Money Breakouts（聪明钱突破策略）
+//
+// 策略描述（根据视频字幕）：
+// 这是一个胜率超高的突破交易策略，适用于外汇、股票、加密货币等交易市场。
+// 策略基于机构资金的突破逻辑，通过识别价格突破前高/前低来判断趋势方向。
+//
+// 交易逻辑：
+// 1. 突破前高：价格突破前一个摆动高点时，出现做多信号
+//    - 第一次突破前高：黄色标记（CHoCH - Change of Character）
+//    - 再次突破前高：绿色标记（BOS - Break of Structure），行情处于多头优势期
+//
+// 2. 突破前低：价格突破前一个摆动低点时，出现做空信号
+//    - 第一次突破前低：黄色标记（CHoCH）
+//    - 再次突破前低：红色标记（BOS），行情处于空头优势期
+//
+// 3. 开仓时机：每次突破时进行开单
+//
+// 4. 止损止盈计算：
+//    - 使用 ATR（Average True Range）计算止损距离
+//    - 做多止损：close - ATR * 1.5
+//    - 做空止损：close + ATR * 1.5
+//    - 止盈：根据盈亏比（RR Ratio）计算，默认1.1
+//
+// 5. 限价单功能（可选）：
+//    - 可以设置回调系数，使开单价位比收盘价低一点
+//    - 适用于手动交易，等待回调后再开仓
+//
+// 参数说明：
+// - Length（摆动长度）：测量波段高低点的长度，长度选得越多，参与计算的K线也越多
+// - Type（计算类型）：选择使用实体部分（Body）或影线（Wicks）参与计算
+// - RR Ratio（盈亏比）：风险回报比，用于计算止盈距离
+//
+// 优势：
+// - 胜率较高，能有效识别趋势突破
+// - 适用于多种交易市场
+// - 信号清晰，易于理解
+//
+// 注意事项：
+// - 建议结合其他指标使用，剔除假突破
+// - 实盘交易风险非常大，本策略仅限技术知识交流，不提供任何投资建议
+// ==========================================================================================
+
+// ==========================================================================================
+//                                     参数设置
+// ==========================================================================================
+
+string CORE = "➞ Core Settings 🔸"
+string TRADE = "➞ Trading Settings 🔸"
+
+// 核心参数
+int period = input.int(20, 'Length', group=CORE, tooltip="摆动长度，测量波段高低点的长度")
+bool CandleType = input.string(title="Type ➞", defval='Wicks', options=['Wicks', 'Body'], group=CORE, tooltip="计算价格：使用影线（Wicks）或实体（Body）") == 'Wicks'
+float RR1 = input.float(1.1, "RR Ratio", step=0.1, tooltip="风险回报比", group=CORE)
+bool SLType = input.string('Close', 'SL Type', ['Close', 'High/Low'], group=CORE, tooltip="止损触发类型：收盘价或最高/最低价") == 'Close'
+
+// 策略开关
+string strategyGroup = "策略开关"
+bool enableLong = input.bool(true, "启用做多", tooltip="开启做多功能", group=strategyGroup)
+bool enableShort = input.bool(true, "启用做空", tooltip="开启做空功能", group=strategyGroup)
+
+// 限价单功能（回调系数）
+bool useLimitOrder = input.bool(false, "使用限价单", tooltip="使用限价单等待回调后再开仓", group=TRADE)
+float limitOrderOffset = input.float(0.0, "限价回调系数", minval=0.0, maxval=1.0, step=0.001, tooltip="限价单相对收盘价的回调百分比（例如：0.002表示回调0.2%）", group=TRADE)
+
+// 可视化参数
+bool ShowSL = input.bool(true, "显示止损线", group=CORE)
+string Linestyle = input.string('Dashed', 'Line Style', ['Solid', 'Dashed', 'Dotted'], group=CORE, inline="Line")
+color Bull = input.color(color.rgb(2, 133, 69), "", group=CORE, inline="Line")
+color Bear = input.color(color.rgb(246, 7, 7), "", group=CORE, inline="Line")
+
+// 颜色定义
+color GREEN = color.rgb(2, 133, 69)
+color TAIL = color.rgb(20, 141, 154)
+color RED = color.rgb(246, 7, 7)
+color _Green = color.rgb(2, 106, 89)
+color OFF = color.new(color.red, 100)
+
+// ==========================================================================================
+//                                     全局变量
+// ==========================================================================================
+
+var float UpdatedHigh = na
+var float UpdatedLow = na
+var int HighIndex = na
+var int LowIndex = na
+var bool phActive = false
+var bool plActive = false
+var bool HBreak = false
+
+// 交易相关变量
+var float longEntryPrice = na
+var float longStopLoss = na
+var float longTakeProfit = na
+var bool longEntryExecuted = false
+var array<box> longEntryBoxes = array.new<box>()
+
+var float shortEntryPrice = na
+var float shortStopLoss = na
+var float shortTakeProfit = na
+var bool shortEntryExecuted = false
+var array<box> shortEntryBoxes = array.new<box>()
+
+// 成交量分析类型
+type Vol
+    array<float> Total
+    array<float> Green
+    array<float> Red
+    array<float> SCR
+
+Volume = Vol.new(array.new_float(), array.new_float(), array.new_float(), array.new_float())
+
+// ==========================================================================================
+//                                     函数定义
+// ==========================================================================================
+
+// ATR 止损计算
+x2 = low - ta.rma(ta.tr(true), 14) * 1.5
+xz = ta.rma(ta.tr(true), 14) * 1.5 + high
+longDiffSL2 = math.abs(close - xz)
+longDiffSL = math.abs(close - x2)
+
+// 线型切换
+StyleSwitch = switch Linestyle
+    'Dashed' => line.style_dashed
+    'Dotted' => line.style_dotted
+    => line.style_solid
+
+// 成交量分析函数
+VolCal(Index, Sync) =>
+    Volume.SCR.clear()
+    Volume.Green.clear()
+    Volume.Red.clear()
+    Volume.Total.clear()
+    
+    Bars = math.abs(Index - Sync)
+    for i = 0 to Bars - 1
+        Volume.SCR.push(close[i])
+    
+    for i = 0 to Volume.SCR.size() - 1
+        if Volume.SCR.get(i) > open[i]
+            Volume.Green.push(volume[i])
+        if Volume.SCR.get(i) < open[i]
+            Volume.Red.push(volume[i])
+        Volume.Total.push(volume[i])
+    
+    GreenRatio = Volume.Total.sum() > 0 ? math.round(Volume.Green.sum() / Volume.Total.sum() * 100, 2) : 0
+    RedRatio = Volume.Total.sum() > 0 ? math.round(Volume.Red.sum() / Volume.Total.sum() * 100, 2) : 0
+    Out = GreenRatio > 55 ? "🟢" : RedRatio > 55 ? "🔴" : "🟡"
+    Out
+
+// ==========================================================================================
+//                                     突破检测
+// ==========================================================================================
+
+int Sync = bar_index
+PH = ta.pivothigh(high, period, period)
+PL = ta.pivotlow(low, period, period)
+ScrHigh = CandleType ? high : close
+ScrLow = CandleType ? low : close
+
+// 更新摆动高低点
+if ta.change(fixnan(PH)) != 0
+    UpdatedHigh := PH
+    phActive := true
+    HighIndex := Sync - period
+
+if ta.change(fixnan(PL)) != 0
+    UpdatedLow := PL
+    plActive := true
+    LowIndex := Sync - period
+
+// 突破检测
+bool BUY = false
+bool SELL = false
+
+// 做多信号：突破前高
+if ScrHigh > UpdatedHigh and phActive
+    BUY := true
+    phActive := false
+
+// 做空信号：突破前低
+if ScrLow < UpdatedLow and plActive
+    SELL := true
+    plActive := false
+
+// 交易信号（没有持仓时）
+bool Long = enableLong and BUY and strategy.position_size == 0 and strategy.opentrades == 0 and not longEntryExecuted
+bool Short = enableShort and SELL and strategy.position_size == 0 and strategy.opentrades == 0 and not shortEntryExecuted
+
+// ==========================================================================================
+//                                     入场执行
+// ==========================================================================================
+
+// 做多入场
+if Long
+    longEntryPrice := useLimitOrder ? close * (1 - limitOrderOffset) : close
+    longStopLoss := close - longDiffSL
+    longTakeProfit := close + (RR1 * longDiffSL)
+    
+    // 创建白色矩形框
+    if not na(longStopLoss) and not na(longTakeProfit) and longStopLoss < longEntryPrice and longTakeProfit > longEntryPrice
+        box entryBox = box.new(left=bar_index, top=longTakeProfit, right=bar_index + 10, bottom=longStopLoss, border_color=color.new(color.white, 0), border_width=1, bgcolor=color.new(color.white, 90), extend=extend.none)
+        array.push(longEntryBoxes, entryBox)
+    
+    // 开仓
+    if useLimitOrder
+        strategy.entry("Long", strategy.long, limit=longEntryPrice, comment="做多")
+    else
+        strategy.entry("Long", strategy.long, comment="做多")
+    
+    longEntryExecuted := true
+    HBreak := true
+
+// 做空入场
+if Short
+    shortEntryPrice := useLimitOrder ? close * (1 + limitOrderOffset) : close
+    shortStopLoss := close + longDiffSL2
+    shortTakeProfit := close - (RR1 * longDiffSL2)
+    
+    // 创建白色矩形框
+    if not na(shortStopLoss) and not na(shortTakeProfit) and shortStopLoss > shortEntryPrice and shortTakeProfit < shortEntryPrice
+        box entryBox = box.new(left=bar_index, top=shortStopLoss, right=bar_index + 10, bottom=shortTakeProfit, border_color=color.new(color.white, 0), border_width=1, bgcolor=color.new(color.white, 90), extend=extend.none)
+        array.push(shortEntryBoxes, entryBox)
+    
+    // 开仓
+    if useLimitOrder
+        strategy.entry("Short", strategy.short, limit=shortEntryPrice, comment="做空")
+    else
+        strategy.entry("Short", strategy.short, comment="做空")
+    
+    shortEntryExecuted := true
+    HBreak := false
+
+// ==========================================================================================
+//                                     止损止盈执行
+// ==========================================================================================
+
+// 做多止损止盈
+if strategy.position_size > 0 and not na(longEntryPrice) and not na(longStopLoss) and not na(longTakeProfit)
+    if longStopLoss < longEntryPrice and longTakeProfit > longEntryPrice
+        strategy.exit("Long Exit", "Long", stop=longStopLoss, limit=longTakeProfit)
+
+// 做空止损止盈
+if strategy.position_size < 0 and not na(shortEntryPrice) and not na(shortStopLoss) and not na(shortTakeProfit)
+    if shortStopLoss > shortEntryPrice and shortTakeProfit < shortEntryPrice
+        strategy.exit("Short Exit", "Short", stop=shortStopLoss, limit=shortTakeProfit)
+
+// 重置变量
+if strategy.position_size == 0 and strategy.opentrades == 0
+    if longEntryExecuted or not na(longEntryPrice)
+        longEntryExecuted := false
+        longEntryPrice := na
+        longStopLoss := na
+        longTakeProfit := na
+    
+    if shortEntryExecuted or not na(shortEntryPrice)
+        shortEntryExecuted := false
+        shortEntryPrice := na
+        shortStopLoss := na
+        shortTakeProfit := na
+
+// ==========================================================================================
+//                                     可视化
+// ==========================================================================================
+
+// 绘制突破线和标签
+if BUY and strategy.position_size == 0
+    sign = VolCal(HighIndex, Sync)
+    line.new(HighIndex, UpdatedHigh, Sync, UpdatedHigh, color=Bull, style=StyleSwitch, width=2)
+    label.new(math.floor(Sync - (Sync - HighIndex) / 2), UpdatedHigh, not HBreak ? 'CHoCH\n' + sign : 'BOS\n' + sign, color=OFF, textcolor=color.white, size=size.tiny)
+    label.new(Sync, low, "", yloc=yloc.belowbar, color=color.lime, size=size.small, style=label.style_label_up)
+
+if SELL and strategy.position_size == 0
+    sign = VolCal(LowIndex, Sync)
+    line.new(LowIndex, UpdatedLow, Sync, UpdatedLow, color=Bear, style=StyleSwitch, width=2)
+    label.new(math.floor(Sync - (Sync - LowIndex) / 2), UpdatedLow, HBreak ? 'CHoCH\n' + sign : 'BOS\n' + sign, color=OFF, textcolor=color.white, style=label.style_label_up, size=size.tiny)
+    label.new(Sync, high, "", yloc=yloc.abovebar, color=RED, size=size.small, style=label.style_label_down)
+
+// 绘制止损止盈线
+plot(strategy.position_size > 0 and not na(longStopLoss) ? longStopLoss : na, "做多止损", color=color.red, style=plot.style_linebr, linewidth=1)
+plot(strategy.position_size > 0 and not na(longTakeProfit) ? longTakeProfit : na, "做多止盈", color=color.green, style=plot.style_linebr, linewidth=1)
+plot(strategy.position_size < 0 and not na(shortStopLoss) ? shortStopLoss : na, "做空止损", color=color.red, style=plot.style_linebr, linewidth=1)
+plot(strategy.position_size < 0 and not na(shortTakeProfit) ? shortTakeProfit : na, "做空止盈", color=color.green, style=plot.style_linebr, linewidth=1)
+
+// 背景颜色
+bool BearCon = strategy.position_size < 0
+bool BullCon = strategy.position_size > 0
+
+barcolor(BearCon ? RED : BullCon ? _Green : color.rgb(52, 52, 54))
+bgcolor(BearCon ? color.rgb(136, 4, 15, 90) : BullCon ? color.rgb(8, 191, 158, 90) : na)
+

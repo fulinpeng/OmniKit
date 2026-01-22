@@ -1,0 +1,625 @@
+//@version=6
+strategy("Multi-Timeframe Bollinger Bands Strategy", overlay=true, default_qty_type=strategy.percent_of_equity, default_qty_value=100, margin_long=0, margin_short=0, max_boxes_count=500, max_lines_count=500, max_labels_count=500, max_bars_back=5000)
+
+// ==========================================================================================
+//                                     策略说明 5分钟 btc 整个历史回测可以达到102%收益
+// ==========================================================================================
+// 多时间框架布林带策略
+// 适用于所有时间级别
+//
+// ====== 做多规则 ======
+// 保本位置为： 开仓价格*1.001
+// 准备做多条件：
+// 当1号布林带下轨小于3号布林带下轨时，readyBuy = true
+//
+// 准备做多失效条件（满足任意一条，readyBuy = false）：
+// 当2号布林带上轨第二次大于3号布林带上轨，并且close第二次满足：close>1号布林带上轨 and close>2号布林带上轨 and close>3号布林带上轨
+// 多单被止盈/止损
+//
+// 做多入场条件（满足所有条件）：
+// 0. readyBuy = true
+// 1. 当前K线收盘价突破1号布林带（绿色）上轨
+// 2. 当前K线收盘价突破2号布林带（橙色）前一根K线上轨
+// 3. 当前K线收盘价突破3号布林带（红色）前两根K线上轨
+// 4. FVG确认：1、2、3都满足后，检测多头FVG（可配置等待K线数，默认0，最大10）
+//    注意：从信号K线开始，逐根检查是否形成多头FVG，有则立即开仓，等待超时则放弃
+//
+// 做多止损：
+// 最近摆动低点（HL/LL，后备：三根K线最低价） - 最近21根K线平均高度
+// 如果最近的摆动低点大于当前开盘价时，止损为：当前收盘价 - 最近21根k线的平均高度 * 3
+//
+// 做多止盈：盈亏比1:3
+//
+// 做多移动止损（做个开关，默认开启）：
+// 盈亏比达到1:1，移动止损到保本位置
+// 盈亏比达到1:1.5、1:2、1:2.5时，移动止损到最近摆动低点（最近摆动低点小于保本位置，取两者最大值）
+//
+// ====== 做空规则 ======
+// 保本位置为： 开仓价格*0.999
+// 准备做空条件：
+// 当1号布林带上轨大于3号布林带上轨时，readySell = true
+//
+// 准备做空失效条件（满足任意一条，readySell = false）：
+// 当2号布林带下轨第二次小于3号布林带下轨，并且close第二次满足：close<1号布林带下轨 and close<2号布林带下轨 and close<3号布林带下轨
+// 空单被止盈/止损
+//
+// 做空入场条件（满足所有条件）：
+// 0. readySell = true
+// 1. 当前K线收盘价跌破1号布林带（绿色）下轨
+// 2. 当前K线收盘价跌破2号布林带（橙色）前一根K线下轨
+// 3. 当前K线收盘价跌破3号布林带（红色）前两根K线下轨
+// 4. FVG确认：1、2、3都满足后，检测空头FVG（可配置等待K线数，默认0，最大10）
+//    注意：从信号K线开始，逐根检查是否形成空头FVG，有则立即开仓，等待超时则放弃
+//
+// 做空止损：
+// 最近摆动高点（HH/LH，后备：三根K线最高价） + 最近21根K线平均高度
+// 如果最近的摆动高点小于当前开盘价时，止损为：当前收盘价 + 最近21根k线的平均高度 * 3
+//
+// 做空止盈：盈亏比1:3
+//
+// 做空移动止损（做个开关，默认开启）：
+// 盈亏比达到1:1，移动止损到保本位置
+// 盈亏比达到1:1.5、1:2、1:2.5时，移动止损到最近摆动高点（最近摆动高点大于保本位置，取两者最小值）
+//
+// ==========================================================================================
+
+// ==========================================================================================
+//                                     参数设置
+// ==========================================================================================
+
+// === 策略开关 ===
+string strategyGroup = "策略开关"
+bool enableLong = input.bool(true, "启用做多", tooltip="开启做多功能（默认开启）", group=strategyGroup)
+bool enableShort = input.bool(true, "启用做空", tooltip="开启做空功能（默认开启）", group=strategyGroup)
+
+// === 布林带参数 ===
+string bbGroup = "布林带参数"
+int bbLength = input.int(21, "布林带周期", minval=1, group=bbGroup)
+string bbMaType = input.string("EMA", "均线类型", options=["SMA", "EMA", "SMMA (RMA)", "WMA", "VWMA"], group=bbGroup)
+float bbSource = input(close, title="数据源", group=bbGroup)
+float bbMultiplier = input.float(2.0, "标准差倍数", minval=0.001, maxval=50, group=bbGroup)
+
+// 布林带倍数（用于模拟多时间框架效果）
+int bb2Multiplier = input.int(3, "2号布林带周期倍数", minval=1, tooltip="2号布林带周期 = 基础周期 × 此倍数", group=bbGroup)
+int bb3Multiplier = input.int(12, "3号布林带周期倍数", minval=1, tooltip="3号布林带周期 = 基础周期 × 此倍数", group=bbGroup)
+
+// === 摆动点参数 ===
+string pivotGroup = "摆动点参数"
+int pivotLength = input.int(15, "摆动点周期", minval=1, tooltip="用于摆动高低点检测的周期", group=pivotGroup)
+
+// === 止损止盈参数 ===
+string slTpGroup = "止损止盈参数"
+float riskRewardRatio = input.float(3.0, "盈亏比", minval=0.1, step=0.1, tooltip="盈亏比，默认为3.0", group=slTpGroup)
+int stopLossMultiplier = input.int(3, "后备止损倍数", minval=1, maxval=10, tooltip="当摆动点不合适时，使用平均K线高度的倍数作为止损", group=slTpGroup)
+
+// === 移动止损参数 ===
+string trailingGroup = "移动止损参数"
+bool enableTrailingStop = input.bool(true, "启用移动止损", tooltip="开启移动止损功能（默认开启）", group=trailingGroup)
+float longBreakevenFactor = input.float(1.001, "做多保本系数", minval=1.0, step=0.0005, tooltip="做多保本位置 = 开仓价格 × 此系数", group=trailingGroup)
+float shortBreakevenFactor = input.float(0.999, "做空保本系数", maxval=1.0, step=0.0005, tooltip="做空保本位置 = 开仓价格 × 此系数", group=trailingGroup)
+// 固定几个盈亏比触发点
+var float[] trailingStopLevels = array.from(1.0, 1.5, 2.0, 2.5)
+
+// === FVG参数 ===
+string fvgGroup = "FVG参数"
+int fvgLookbackBars = input.int(5, "FVG回溯K线数", minval=3, maxval=20, tooltip="往前推几根K线检测FVG", group=fvgGroup)
+int fvgWaitBars = input.int(0, "FVG等待K线数", minval=0, maxval=10, tooltip="突破后等待FVG确认的最大K线数（0=当前K线必须有FVG）", group=fvgGroup)
+int fvgGapMultiplier = input.int(5, "FVG gap倍数", minval=1, maxval=10000, tooltip="FVG最小间隙 = 平均K线高度 / 此倍数", group=fvgGroup)
+bool enableFvgPriceCheck = input.bool(true, "启用FVG价格检查", tooltip="做多时收盘价需大于FVG最小值，做空时收盘价需小于FVG最大值", group=fvgGroup)
+
+// === 仓位管理参数（以损定仓） ===
+string positionGroup = "仓位管理"
+bool enableRiskBasedSizing = input.bool(false, "启用以损定仓", tooltip="开启后按照最大亏损占比计算下单仓位", group=positionGroup)
+float riskPerTradePercent = input.float(1.0, "最大亏损占比(%)", minval=0.1, maxval=100, step=0.1, tooltip="单笔允许亏损占账户权益的百分比，默认1%", group=positionGroup)
+float riskPerTradeFraction = riskPerTradePercent * 0.01
+
+// ==========================================================================================
+//                                     辅助函数
+// ==========================================================================================
+
+// 计算均线
+calcMA(float source, int length, string maType) =>
+    switch maType
+        "SMA" => ta.sma(source, length)
+        "EMA" => ta.ema(source, length)
+        "SMMA (RMA)" => ta.rma(source, length)
+        "WMA" => ta.wma(source, length)
+        "VWMA" => ta.vwma(source, length)
+
+// 以损定仓计算
+calcRiskBasedQty(entryPrice, stopPrice) =>
+    // 解方程式：(math.abs(开单价格 - 止损价格) / 止损价格) * (开单仓位的数量 * 开单价格) = 单笔风险
+    // 得出：开单仓位的数量 = 单笔风险 * 止损价格 / (开单价格 * math.abs(开单价格 - 止损价格))
+    usableCapital = math.max(strategy.initial_capital, strategy.equity)
+    stopDistance = math.abs(entryPrice - stopPrice)
+    if stopDistance <= 0 or entryPrice <= 0 or stopPrice <= 0 or usableCapital <= 0
+        na
+    else
+        riskAmount = usableCapital * riskPerTradeFraction
+        // 根据方程式计算仓位数量
+        qty = (riskAmount * stopPrice) / (entryPrice * stopDistance)
+        // 限制最大仓位不超过可用资金
+        maxQtyByCapital = usableCapital / entryPrice
+        math.min(qty, maxQtyByCapital)
+
+// 获取最近摆动高点
+getLatestSwingHigh(float[] swingHighs) =>
+    array.size(swingHighs) > 0 ? array.get(swingHighs, array.size(swingHighs) - 1) : na
+
+// 获取最近摆动低点
+getLatestSwingLow(float[] swingLows) =>
+    array.size(swingLows) > 0 ? array.get(swingLows, array.size(swingLows) - 1) : na
+
+// 计算平均K线高度
+avgHeightLength = 21
+var float avgCandleHeight = na
+if bar_index >= avgHeightLength - 1
+    sumHeight = 0.0
+    for i = 0 to avgHeightLength - 1
+        sumHeight += high[i] - low[i]
+    avgCandleHeight := sumHeight / avgHeightLength
+else if bar_index >= 0
+    sumHeight = 0.0
+    for i = 0 to bar_index
+        sumHeight += high[i] - low[i]
+    avgCandleHeight := sumHeight / (bar_index + 1)
+
+// 检测多头FVG
+detectBullishFVG(int offset, float _avgCandleHeight, int gapMultiplier) =>
+    htfHigh3 = high[2 + offset]
+    htfLow1 = low[offset]
+    isFvgPattern = htfHigh3 < htfLow1
+    fvgGap = htfLow1 - htfHigh3
+    minGapRequired = _avgCandleHeight > 0 ? _avgCandleHeight / gapMultiplier : 0
+    isValid = isFvgPattern and fvgGap > minGapRequired
+    fvgMinPrice = htfLow1
+    [isValid, fvgMinPrice]
+
+// 检测空头FVG
+detectBearishFVG(int offset, float _avgCandleHeight, int gapMultiplier) =>
+    htfLow3 = low[2 + offset]
+    htfHigh1 = high[offset]
+    isFvgPattern = htfLow3 > htfHigh1
+    fvgGap = htfLow3 - htfHigh1
+    minGapRequired = _avgCandleHeight > 0 ? _avgCandleHeight / gapMultiplier : 0
+    isValid = isFvgPattern and fvgGap > minGapRequired
+    fvgMaxPrice = htfHigh1
+    [isValid, fvgMaxPrice]
+
+// ==========================================================================================
+//                                     布林带计算
+// ==========================================================================================
+
+// 1号布林带（绿色，当前级别）
+int bb1Length = bbLength
+float bb1Basis = calcMA(bbSource, bb1Length, bbMaType)
+float bb1Dev = bbMultiplier * ta.stdev(bbSource, bb1Length)
+float bb1Upper = bb1Basis + bb1Dev
+float bb1Lower = bb1Basis - bb1Dev
+
+// 2号布林带（橙色，稍大级别）
+int bb2Length = bbLength * bb2Multiplier
+float bb2Basis = calcMA(bbSource, bb2Length, bbMaType)
+float bb2Dev = bbMultiplier * ta.stdev(bbSource, bb2Length)
+float bb2Upper = bb2Basis + bb2Dev
+float bb2Lower = bb2Basis - bb2Dev
+
+// 3号布林带（红色，更大级别）
+int bb3Length = bbLength * bb3Multiplier
+float bb3Basis = calcMA(bbSource, bb3Length, bbMaType)
+float bb3Dev = bbMultiplier * ta.stdev(bbSource, bb3Length)
+float bb3Upper = bb3Basis + bb3Dev
+float bb3Lower = bb3Basis - bb3Dev
+
+// ==========================================================================================
+//                                     布林带绘制
+// ==========================================================================================
+
+// 1号布林带（绿色）
+plot(bb1Basis, "BB1 中轨", color=#089981)
+plot(bb1Upper, "BB1 上轨", color=#089981)
+plot(bb1Lower, "BB1 下轨", color=#089981)
+
+// 2号布林带（橙色）
+plot(bb2Basis, "BB2 中轨", color=#FF6D00)
+plot(bb2Upper, "BB2 上轨", color=#FF6D00)
+plot(bb2Lower, "BB2 下轨", color=#FF6D00)
+
+// 3号布林带（红色）
+plot(bb3Basis, "BB3 中轨", color=#F23645)
+plot(bb3Upper, "BB3 上轨", color=#F23645)
+plot(bb3Lower, "BB3 下轨", color=#F23645)
+
+// ==========================================================================================
+//                                     摆动点检测
+// ==========================================================================================
+
+// 存储摆动高低点
+var float[] swingHighs = array.new<float>()
+var float[] swingLows = array.new<float>()
+var int[] swingHighBars = array.new<int>()
+var int[] swingLowBars = array.new<int>()
+
+// 前一个摆动高/低点（用于判断HH/LH/HL/LL）
+var float prevSwingHigh = na
+var float prevSwingLow = na
+
+// 检测摆动高点
+float pivotHigh = ta.pivothigh(high, pivotLength, pivotLength)
+float pivotLow = ta.pivotlow(low, pivotLength, pivotLength)
+
+// 当前bar_index
+int currentBarIndex = bar_index
+
+// 处理摆动高点
+if not na(pivotHigh)
+    // 存储摆动高点
+    array.push(swingHighs, pivotHigh)
+    int pivotBar = currentBarIndex[pivotLength]
+    array.push(swingHighBars, pivotBar)
+    if array.size(swingHighs) > 10
+        array.shift(swingHighs)
+        array.shift(swingHighBars)
+    
+    // 更新前一个摆动高点
+    prevSwingHigh := pivotHigh
+
+else if not na(pivotLow)
+    // 存储摆动低点
+    array.push(swingLows, pivotLow)
+    int pivotBar = currentBarIndex[pivotLength]
+    array.push(swingLowBars, pivotBar)
+    if array.size(swingLows) > 10
+        array.shift(swingLows)
+        array.shift(swingLowBars)
+    
+    // 更新前一个摆动低点
+    prevSwingLow := pivotLow
+
+// 获取最近的摆动高低点
+float latestSwingHigh = getLatestSwingHigh(swingHighs)
+float latestSwingLow = getLatestSwingLow(swingLows)
+
+// ==========================================================================================
+//                                     准备条件（readyBuy / readySell）
+// ==========================================================================================
+
+// 准备做多/做空状态变量
+var bool readyBuy = false
+var bool readySell = false
+
+// 失效条件计数器（用于跟踪"第二次"触发）
+var int longInvalidCount = 0
+var int shortInvalidCount = 0
+var bool prevLongInvalidCondition = false
+var bool prevShortInvalidCondition = false
+
+// === 准备做多条件 ===
+// 当1号布林带下轨小于3号布林带下轨时，readyBuy = true
+bool longReadyCondition = bb1Lower < bb3Lower
+
+// === 准备做多失效条件 ===
+// 当2号布林带上轨大于3号布林带上轨，并且close突破三条上轨时，计数+1，第二次触发时 readyBuy = false
+bool longInvalidCondition = bb2Upper > bb3Upper and close > bb1Upper and close > bb2Upper and close > bb3Upper
+
+// 更新 readyBuy 状态
+if not readyBuy and longReadyCondition
+    readyBuy := true
+    longInvalidCount := 0  // 重置计数器
+
+// 检测失效条件从 false 变为 true（上穿）
+if readyBuy and longInvalidCondition and not prevLongInvalidCondition
+    longInvalidCount += 1
+
+// 第二次触发失效条件时，readyBuy = false
+if readyBuy and longInvalidCount >= 2
+    readyBuy := false
+    longInvalidCount := 0
+
+prevLongInvalidCondition := longInvalidCondition
+
+// === 准备做空条件 ===
+// 当1号布林带上轨大于3号布林带上轨时，readySell = true
+bool shortReadyCondition = bb1Upper > bb3Upper
+
+// === 准备做空失效条件 ===
+// 当2号布林带下轨小于3号布林带下轨，并且close跌破三条下轨时，计数+1，第二次触发时 readySell = false
+bool shortInvalidCondition = bb2Lower < bb3Lower and close < bb1Lower and close < bb2Lower and close < bb3Lower
+
+// 更新 readySell 状态
+if not readySell and shortReadyCondition
+    readySell := true
+    shortInvalidCount := 0  // 重置计数器
+
+// 检测失效条件从 false 变为 true（下穿）
+if readySell and shortInvalidCondition and not prevShortInvalidCondition
+    shortInvalidCount += 1
+
+// 第二次触发失效条件时，readySell = false
+if readySell and shortInvalidCount >= 2
+    readySell := false
+    shortInvalidCount := 0
+
+prevShortInvalidCondition := shortInvalidCondition
+
+// ==========================================================================================
+//                                     入场条件
+// ==========================================================================================
+
+// 做多条件：当前K线向上突破三条布林带的上轨
+bool breakAboveBB1 = close > bb1Upper
+bool breakAboveBB2 = close > bb2Upper
+bool breakAboveBB3 = close > bb3Upper
+bool longBreakoutSignal = readyBuy and breakAboveBB1 and breakAboveBB2 and breakAboveBB3
+
+// 做空条件：当前K线向下突破三条布林带的下轨
+bool breakBelowBB1 = close < bb1Lower
+bool breakBelowBB2 = close < bb2Lower
+bool breakBelowBB3 = close < bb3Lower
+bool shortBreakoutSignal = readySell and breakBelowBB1 and breakBelowBB2 and breakBelowBB3
+
+// ==========================================================================================
+//                                     FVG等待窗口逻辑
+// ==========================================================================================
+
+// 做多FVG等待窗口
+var bool longFvgWindowActive = false
+var int longFvgWindowStart = na
+var int longFvgLookbackStart = na
+
+// 做空FVG等待窗口
+var bool shortFvgWindowActive = false
+var int shortFvgWindowStart = na
+var int shortFvgLookbackStart = na
+
+// 做多：突破信号触发时开启等待窗口
+if enableLong and longBreakoutSignal and strategy.position_size == 0 and not longFvgWindowActive
+    longFvgWindowActive := true
+    longFvgWindowStart := bar_index
+    longFvgLookbackStart := bar_index - fvgLookbackBars
+else if longFvgWindowActive
+    // 窗口超时或已开仓则关闭
+    if bar_index - longFvgWindowStart > fvgWaitBars or strategy.position_size != 0
+        longFvgWindowActive := false
+        longFvgWindowStart := na
+        longFvgLookbackStart := na
+
+// 做空：突破信号触发时开启等待窗口
+if enableShort and shortBreakoutSignal and strategy.position_size == 0 and not shortFvgWindowActive
+    shortFvgWindowActive := true
+    shortFvgWindowStart := bar_index
+    shortFvgLookbackStart := bar_index - fvgLookbackBars
+else if shortFvgWindowActive
+    // 窗口超时或已开仓则关闭
+    if bar_index - shortFvgWindowStart > fvgWaitBars or strategy.position_size != 0
+        shortFvgWindowActive := false
+        shortFvgWindowStart := na
+        shortFvgLookbackStart := na
+
+// 检测做多FVG确认
+bool longFvgConfirmed = false
+if longFvgWindowActive and not na(longFvgLookbackStart) and longFvgLookbackStart >= 3
+    maxOffset = bar_index - longFvgLookbackStart
+    maxCheckOffset = math.min(maxOffset, 20)
+    for offset = 0 to math.max(0, maxCheckOffset)
+        [isValid, fvgMinPrice] = detectBullishFVG(offset, avgCandleHeight, fvgGapMultiplier)
+        priceCheckPassed = not enableFvgPriceCheck or close > fvgMinPrice
+        if isValid and priceCheckPassed
+            longFvgConfirmed := true
+            break
+
+// 检测做空FVG确认
+bool shortFvgConfirmed = false
+if shortFvgWindowActive and not na(shortFvgLookbackStart) and shortFvgLookbackStart >= 3
+    maxOffset = bar_index - shortFvgLookbackStart
+    maxCheckOffset = math.min(maxOffset, 20)
+    for offset = 0 to math.max(0, maxCheckOffset)
+        [isValid, fvgMaxPrice] = detectBearishFVG(offset, avgCandleHeight, fvgGapMultiplier)
+        priceCheckPassed = not enableFvgPriceCheck or close < fvgMaxPrice
+        if isValid and priceCheckPassed
+            shortFvgConfirmed := true
+            break
+
+// 完整的入场条件（需要FVG确认）
+bool longEntryCondition = enableLong and longFvgConfirmed and strategy.position_size == 0
+bool shortEntryCondition = enableShort and shortFvgConfirmed and strategy.position_size == 0
+
+// ==========================================================================================
+//                                     止损止盈变量
+// ==========================================================================================
+
+// 做多变量
+var float longEntryPrice = na
+var float longStopLoss = na
+var float longInitialStopLoss = na
+var float longTakeProfit = na
+var bool longEntryExecuted = false
+var array<box> longEntryBoxes = array.new<box>()
+
+// 做空变量
+var float shortEntryPrice = na
+var float shortStopLoss = na
+var float shortInitialStopLoss = na
+var float shortTakeProfit = na
+var bool shortEntryExecuted = false
+var array<box> shortEntryBoxes = array.new<box>()
+
+// ==========================================================================================
+//                                     做多逻辑
+// ==========================================================================================
+
+if longEntryCondition and strategy.position_size == 0 and not longEntryExecuted
+    longEntryPrice := close
+    // 止损设置为最近摆动低点 - 平均K线高度
+    // 如果摆动低点大于开盘价，则使用后备止损：收盘价 - 平均高度 * 倍数
+    float longLowest3Bars = ta.lowest(low, 3)
+    float avgHeight = na(avgCandleHeight) ? (high - low) : avgCandleHeight
+    float swingLowStop = not na(latestSwingLow) ? latestSwingLow : longLowest3Bars
+    if swingLowStop > open
+        // 摆动低点大于开盘价，使用后备止损
+        longStopLoss := close - avgHeight * stopLossMultiplier
+    else
+        longStopLoss := swingLowStop - avgHeight
+    longInitialStopLoss := longStopLoss
+    longEntryExecuted := true
+    // 关闭FVG窗口
+    longFvgWindowActive := false
+    longFvgWindowStart := na
+    longFvgLookbackStart := na
+    
+    // 计算止盈价格（无论是否启用以损定仓都需要）
+    longTakeProfit := not na(longEntryPrice) and not na(longStopLoss) ? longEntryPrice + (longEntryPrice - longStopLoss) * riskRewardRatio : na
+    
+    // 创建开仓位置白色矩形（下边框为止损，上边框为止盈，不删除）
+    if not na(longStopLoss) and not na(longTakeProfit)
+        box entryBox = box.new(left=bar_index, top=longTakeProfit, right=bar_index + 10, bottom=longStopLoss, border_color=color.new(color.white, 0), border_width=1, bgcolor=color.new(color.white, 90), extend=extend.none)
+        array.push(longEntryBoxes, entryBox)
+    
+    // 计算以损定仓的仓位
+    float longQtyForEntry = enableRiskBasedSizing ? calcRiskBasedQty(longEntryPrice, longStopLoss) : na
+    
+    // 如果启用了以损定仓但计算失败，不开仓
+    if not (enableRiskBasedSizing and na(longQtyForEntry))
+        strategy.entry("Long", strategy.long, qty=enableRiskBasedSizing and not na(longQtyForEntry) ? longQtyForEntry : na, comment="做多")
+
+// 当没有持仓且没有待执行的多单时，重置开仓标志
+if strategy.position_size == 0 and longEntryExecuted and bar_index > 0
+    // 只有在之前设置了开仓标志，且当前确实没有持仓时才重置
+    // 使用 strategy.opentrades 来检查是否有未完成的交易
+    if strategy.opentrades == 0
+        longEntryExecuted := false
+        readyBuy := false  // 止损后重置准备状态
+        longInvalidCount := 0  // 重置计数器
+
+// ==========================================================================================
+//                                     做多移动止损逻辑
+// ==========================================================================================
+
+if enableTrailingStop and strategy.position_size > 0 and not na(longEntryPrice) and not na(longInitialStopLoss)
+    float currentProfit = close - longEntryPrice
+    float currentRisk = longEntryPrice - longInitialStopLoss
+    float currentRR = currentRisk > 0 ? currentProfit / currentRisk : 0.0
+    float longBreakevenPrice = longEntryPrice * longBreakevenFactor
+    
+    // 盈亏比达到1:1，移动止损到保本位置
+    if currentRR >= 1.0
+        if na(longStopLoss) or longBreakevenPrice > longStopLoss
+            longStopLoss := longBreakevenPrice
+    
+    // 盈亏比达到1:1.5、1:2、1:2.5时，移动止损到最近摆动低点（取摆动低点和保本位置的最大值）
+    if currentRR >= 1.5 and not na(latestSwingLow)
+        float newStopLoss = math.max(latestSwingLow, longBreakevenPrice)
+        if not na(newStopLoss) and (na(longStopLoss) or newStopLoss > longStopLoss)
+            longStopLoss := newStopLoss
+
+// ==========================================================================================
+//                                     做多止损止盈执行
+// ==========================================================================================
+
+// 止盈：价格到达止盈价格时立即平仓
+if strategy.position_size > 0 and not na(longTakeProfit)
+    if close >= longTakeProfit
+        strategy.close("Long", comment="止盈")
+        longEntryPrice := na
+        longStopLoss := na
+        longInitialStopLoss := na
+        longTakeProfit := na
+        readyBuy := false  // 止盈后重置准备状态
+        longInvalidCount := 0  // 重置计数器
+
+// 止损：使用 strategy.exit
+if strategy.position_size > 0 and not na(longStopLoss)
+    strategy.exit("Long Exit", "Long", stop=longStopLoss)
+
+// ==========================================================================================
+//                                     做空逻辑
+// ==========================================================================================
+
+if shortEntryCondition and strategy.position_size == 0 and not shortEntryExecuted
+    shortEntryPrice := close
+    // 止损设置为最近摆动高点 + 平均K线高度
+    // 如果摆动高点小于开盘价，则使用后备止损：收盘价 + 平均高度 * 倍数
+    float shortHighest3Bars = ta.highest(high, 3)
+    float avgHeight = na(avgCandleHeight) ? (high - low) : avgCandleHeight
+    float swingHighStop = not na(latestSwingHigh) ? latestSwingHigh : shortHighest3Bars
+    if swingHighStop < open
+        // 摆动高点小于开盘价，使用后备止损
+        shortStopLoss := close + avgHeight * stopLossMultiplier
+    else
+        shortStopLoss := swingHighStop + avgHeight
+    shortInitialStopLoss := shortStopLoss
+    shortEntryExecuted := true
+    // 关闭FVG窗口
+    shortFvgWindowActive := false
+    shortFvgWindowStart := na
+    shortFvgLookbackStart := na
+    
+    // 计算止盈价格（无论是否启用以损定仓都需要）
+    shortTakeProfit := not na(shortEntryPrice) and not na(shortStopLoss) ? shortEntryPrice - (shortStopLoss - shortEntryPrice) * riskRewardRatio : na
+    
+    // 创建开仓位置白色矩形（下边框为止盈，上边框为止损，不删除）
+    if not na(shortStopLoss) and not na(shortTakeProfit)
+        box entryBox = box.new(left=bar_index, top=shortStopLoss, right=bar_index + 10, bottom=shortTakeProfit, border_color=color.new(color.white, 0), border_width=1, bgcolor=color.new(color.white, 90), extend=extend.none)
+        array.push(shortEntryBoxes, entryBox)
+    
+    // 计算以损定仓的仓位
+    float shortQtyForEntry = enableRiskBasedSizing ? calcRiskBasedQty(shortEntryPrice, shortStopLoss) : na
+    
+    // 如果启用了以损定仓但计算失败，不开仓
+    if not (enableRiskBasedSizing and na(shortQtyForEntry))
+        strategy.entry("Short", strategy.short, qty=enableRiskBasedSizing and not na(shortQtyForEntry) ? shortQtyForEntry : na, comment="做空")
+
+// 当没有持仓且没有待执行的空单时，重置开仓标志
+if strategy.position_size == 0 and shortEntryExecuted and bar_index > 0
+    // 只有在之前设置了开仓标志，且当前确实没有持仓时才重置
+    if strategy.opentrades == 0
+        shortEntryExecuted := false
+        readySell := false  // 止损后重置准备状态
+        shortInvalidCount := 0  // 重置计数器
+
+// ==========================================================================================
+//                                     做空移动止损逻辑
+// ==========================================================================================
+
+if enableTrailingStop and strategy.position_size < 0 and not na(shortEntryPrice) and not na(shortInitialStopLoss)
+    float currentProfit = shortEntryPrice - close
+    float currentRisk = shortInitialStopLoss - shortEntryPrice
+    float currentRR = currentRisk > 0 ? currentProfit / currentRisk : 0.0
+    float shortBreakevenPrice = shortEntryPrice * shortBreakevenFactor
+    
+    // 盈亏比达到1:1，移动止损到保本位置
+    if currentRR >= 1.0
+        if na(shortStopLoss) or shortBreakevenPrice < shortStopLoss
+            shortStopLoss := shortBreakevenPrice
+    
+    // 盈亏比达到1:1.5、1:2、1:2.5时，移动止损到最近摆动高点（取摆动高点和保本位置的最小值）
+    if currentRR >= 1.5 and not na(latestSwingHigh)
+        float newStopLoss = math.min(latestSwingHigh, shortBreakevenPrice)
+        if not na(newStopLoss) and (na(shortStopLoss) or newStopLoss < shortStopLoss)
+            shortStopLoss := newStopLoss
+
+// ==========================================================================================
+//                                     做空止损止盈执行
+// ==========================================================================================
+
+// 止盈：价格到达止盈价格时立即平仓
+if strategy.position_size < 0 and not na(shortTakeProfit)
+    if close <= shortTakeProfit
+        strategy.close("Short", comment="止盈")
+        shortEntryPrice := na
+        shortStopLoss := na
+        shortInitialStopLoss := na
+        shortTakeProfit := na
+        readySell := false  // 止盈后重置准备状态
+        shortInvalidCount := 0  // 重置计数器
+
+// 止损：使用 strategy.exit
+if strategy.position_size < 0 and not na(shortStopLoss)
+    strategy.exit("Short Exit", "Short", stop=shortStopLoss)
+
+// ==========================================================================================
+//                                     准备状态可视化
+// ==========================================================================================
+bgcolor(readyBuy ? color.new(color.green, 90) : na, title="准备做多背景")
+bgcolor(readySell ? color.new(color.red, 90) : na, title="准备做空背景")
+

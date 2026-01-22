@@ -1,0 +1,249 @@
+//@version=6
+strategy("Trader XO + MACD + EMA Strategy", overlay=true, default_qty_type=strategy.percent_of_equity, default_qty_value=100, commission_type=strategy.commission.percent, commission_value=0.04)
+
+// ==========================================================================================
+//                                     策略说明
+// ==========================================================================================
+//
+// 使用指标：
+// 1. Trader XO：提供清晰的买入和卖出信号
+//    - 包含两条移动平均线（快线和慢线）
+//    - 金叉（快线上穿慢线）= 买入信号
+//    - 死叉（快线下穿慢线）= 卖出信号
+//    - 做多止损：放在前低之下
+//    - 做空止损：放在前高之上
+//    - 盈亏比：建议1:1.5或更大
+//
+// 2. MACD：用于过滤假信号，判断市场动量
+//    - 快线周期：26
+//    - 慢线周期：100
+//    - 只使用直方图（柱状图），取消MACD线和信号线
+//    - 零轴以下（红色柱）= 水下 = 下跌趋势
+//    - 零轴以上（绿色柱）= 水上 = 上涨趋势
+//
+// 3. EMA：判断趋势方向
+//    - 周期：200
+//    - 颜色：白色，加粗
+//    - 价格在EMA200之上 = 上涨趋势
+//    - 价格在EMA200之下 = 下跌趋势
+//
+// 交易逻辑：
+//
+// 做多条件（必须同时满足所有条件）：
+// 1. Trader XO 出现买入信号（快线上穿慢线，金叉）
+// 2. MACD 直方图在零轴以上（水上，绿色柱状图）
+// 3. 价格在EMA200之上
+// 止损：放在前低之下
+//
+// 做空条件（必须同时满足所有条件）：
+// 1. Trader XO 出现卖出信号（快线下穿慢线，死叉）
+// 2. MACD 直方图在零轴以下（水下，红色柱状图）
+// 3. 价格在EMA200之下
+// 止损：放在前高之上
+//
+// 优势：
+// - 通过MACD过滤震荡行情中的假信号
+// - 通过EMA200确认大趋势方向
+// - 结合三个指标，提高交易成功率
+//
+// 注意事项：
+// - 在震荡行情中，单独使用Trader XO会产生大量假信号
+// - 必须三个条件同时满足才开仓，可以大幅减少假信号
+// - 建议根据交易品种调整参数
+// ==========================================================================================
+
+// ==========================================================================================
+//                                     参数设置
+// ==========================================================================================
+
+// === 策略开关 ===
+string strategyGroup = "策略开关"
+bool enableLong = input.bool(true, "启用做多", tooltip="开启做多功能", group=strategyGroup)
+bool enableShort = input.bool(true, "启用做空", tooltip="开启做空功能", group=strategyGroup)
+
+// === Trader XO 参数 ===
+string xoGroup = "Trader XO 参数"
+int xoFastEMA = input.int(12, "快速EMA周期", minval=1, tooltip="Trader XO快线周期", group=xoGroup)
+int xoSlowEMA = input.int(25, "慢速EMA周期", minval=1, tooltip="Trader XO慢线周期", group=xoGroup)
+int xoDefEMA = input.int(25, "Consolidated EMA周期", minval=1, tooltip="Trader XO合并EMA周期", group=xoGroup)
+bool showBothEMAs = input.bool(true, "显示两条EMA", tooltip="是否同时显示快线和慢线", group=xoGroup)
+
+// === MACD 参数 ===
+string macdGroup = "MACD 参数"
+int macdFastLength = input.int(26, "MACD快线周期", minval=1, tooltip="MACD快线周期，视频中建议26", group=macdGroup)
+int macdSlowLength = input.int(100, "MACD慢线周期", minval=1, tooltip="MACD慢线周期，视频中建议100", group=macdGroup)
+int macdSignalLength = input.int(9, "信号线周期", minval=1, tooltip="MACD信号线周期", group=macdGroup)
+
+// === EMA 参数 ===
+string emaGroup = "EMA 参数"
+int emaLength = input.int(200, "EMA周期", minval=1, tooltip="EMA周期，视频中建议200", group=emaGroup)
+
+// === 止损止盈参数 ===
+string slTpGroup = "止损止盈参数"
+int pivotLookback = input.int(10, "摆动点回溯周期", minval=1, tooltip="用于查找前高/前低的周期", group=slTpGroup)
+float riskRewardRatio = input.float(3.0, "盈亏比", minval=0.1, step=0.1, tooltip="固定盈亏比，建议1:3", group=slTpGroup)
+float stopLossOffset = input.float(0.001, "止损偏移", minval=0, step=0.0001, tooltip="止损相对前高/前低的偏移百分比", group=slTpGroup)
+
+// ==========================================================================================
+//                                     Trader XO 计算
+// ==========================================================================================
+
+// 计算Trader XO的EMA
+src = close
+v_fastEMA = ta.ema(src, xoFastEMA)
+v_slowEMA = ta.ema(src, xoSlowEMA)
+v_biasEMA = ta.ema(src, xoDefEMA)
+
+// 判断趋势方向
+buy = v_fastEMA > v_slowEMA
+sell = v_fastEMA < v_slowEMA
+
+// Trader XO 买入和卖出信号（金叉/死叉）
+buysignal = ta.crossover(v_fastEMA, v_slowEMA)  // 快线上穿慢线，金叉
+sellsignal = ta.crossunder(v_fastEMA, v_slowEMA)  // 快线下穿慢线，死叉
+
+// ==========================================================================================
+//                                     MACD 计算
+// ==========================================================================================
+
+// MACD计算
+fast_ma = ta.ema(src, macdFastLength)
+slow_ma = ta.ema(src, macdSlowLength)
+macd_line = fast_ma - slow_ma
+signal_line = ta.ema(macd_line, macdSignalLength)
+hist = macd_line - signal_line
+
+// MACD趋势判断
+macdBullish = hist > 0  // 水上，上涨趋势（绿色柱）
+macdBearish = hist < 0  // 水下，下跌趋势（红色柱）
+
+// ==========================================================================================
+//                                     EMA 计算
+// ==========================================================================================
+
+// EMA200计算
+ema200 = ta.ema(src, emaLength)
+
+// EMA趋势判断
+priceAboveEMA = close > ema200  // 价格在EMA200之上，上涨趋势
+priceBelowEMA = close < ema200  // 价格在EMA200之下，下跌趋势
+
+// ==========================================================================================
+//                                     入场条件
+// ==========================================================================================
+
+// 做多条件：Trader XO买入信号 + MACD水上 + 价格在EMA200之上
+bool longCondition = enableLong and buysignal and macdBullish and priceAboveEMA
+
+// 做空条件：Trader XO卖出信号 + MACD水下 + 价格在EMA200之下
+bool shortCondition = enableShort and sellsignal and macdBearish and priceBelowEMA
+
+// ==========================================================================================
+//                                     止损计算（在开仓时固定）
+// ==========================================================================================
+
+// ==========================================================================================
+//                                     入场执行
+// ==========================================================================================
+
+var float longEntryPrice = na
+var float longTakeProfit = na
+var float longStopLossValue = na
+var bool longEntryExecuted = false
+var array<box> longEntryBoxes = array.new<box>()
+
+var float shortEntryPrice = na
+var float shortTakeProfit = na
+var float shortStopLossValue = na
+var bool shortEntryExecuted = false
+var array<box> shortEntryBoxes = array.new<box>()
+
+// 做多入场（确保平仓后再开单）
+if longCondition and strategy.position_size == 0 and strategy.opentrades == 0 and not longEntryExecuted
+    longEntryPrice := close
+    // 计算前低（用于做多止损）
+    float previousLow = ta.lowest(low, pivotLookback)
+    longStopLossValue := previousLow * (1 - stopLossOffset)  // 前低之下
+    longTakeProfit := longEntryPrice + (longEntryPrice - longStopLossValue) * riskRewardRatio  // 固定盈亏比止盈
+    
+    // 创建白色矩形框（从止损到止盈）
+    if not na(longStopLossValue) and not na(longTakeProfit)
+        box entryBox = box.new(left=bar_index, top=longTakeProfit, right=bar_index + 10, bottom=longStopLossValue, border_color=color.new(color.white, 0), border_width=1, bgcolor=color.new(color.white, 90), extend=extend.none)
+        array.push(longEntryBoxes, entryBox)
+    
+    strategy.entry("Long", strategy.long, comment="做多")
+    longEntryExecuted := true  // 标记已开仓
+    
+// 做空入场（确保平仓后再开单）
+if shortCondition and strategy.position_size == 0 and strategy.opentrades == 0 and not shortEntryExecuted
+    shortEntryPrice := close
+    // 计算前高（用于做空止损）
+    float previousHigh = ta.highest(high, pivotLookback)
+    shortStopLossValue := previousHigh * (1 + stopLossOffset)  // 前高之上
+    shortTakeProfit := shortEntryPrice - (shortStopLossValue - shortEntryPrice) * riskRewardRatio  // 固定盈亏比止盈
+    
+    // 创建白色矩形框（从止损到止盈，注意做空时上边界是止损，下边界是止盈）
+    if not na(shortStopLossValue) and not na(shortTakeProfit)
+        box entryBox = box.new(left=bar_index, top=shortStopLossValue, right=bar_index + 10, bottom=shortTakeProfit, border_color=color.new(color.white, 0), border_width=1, bgcolor=color.new(color.white, 90), extend=extend.none)
+        array.push(shortEntryBoxes, entryBox)
+    
+    strategy.entry("Short", strategy.short, comment="做空")
+    shortEntryExecuted := true  // 标记已开仓
+
+// ==========================================================================================
+//                                     止损止盈执行
+// ==========================================================================================
+
+// 做多止损止盈
+if strategy.position_size > 0 and not na(longEntryPrice) and not na(longStopLossValue)
+    strategy.exit("Long Exit", "Long", stop=longStopLossValue, limit=longTakeProfit)
+
+// 做空止损止盈
+if strategy.position_size < 0 and not na(shortEntryPrice) and not na(shortStopLossValue)
+    strategy.exit("Short Exit", "Short", stop=shortStopLossValue, limit=shortTakeProfit)
+
+// 重置变量（确保完全平仓且没有待执行订单后）
+if strategy.position_size == 0 and strategy.opentrades == 0
+    if longEntryExecuted
+        longEntryExecuted := false
+    if shortEntryExecuted
+        shortEntryExecuted := false
+    
+    longEntryPrice := na
+    longStopLossValue := na
+    longTakeProfit := na
+    
+    shortEntryPrice := na
+    shortStopLossValue := na
+    shortTakeProfit := na
+
+// ==========================================================================================
+//                                     可视化
+// ==========================================================================================
+
+// 绘制Trader XO EMA
+emaColor = v_fastEMA > v_slowEMA ? color.green : v_fastEMA < v_slowEMA ? color.red : #FF530D
+plot(showBothEMAs ? na : v_biasEMA, color=emaColor, linewidth=3, title='Consolidated EMA')
+plot(showBothEMAs ? v_fastEMA : na, title='Fast EMA', color=emaColor)
+plot(showBothEMAs ? v_slowEMA : na, title='Slow EMA', color=emaColor)
+
+// 绘制EMA200
+plot(ema200, color=color.white, linewidth=2, title='EMA200')
+
+// 绘制止损止盈线
+plot(strategy.position_size > 0 ? longStopLossValue : na, "做多止损", color=color.red, style=plot.style_linebr, linewidth=1)
+plot(strategy.position_size > 0 ? longTakeProfit : na, "做多止盈", color=color.green, style=plot.style_linebr, linewidth=1)
+plot(strategy.position_size < 0 ? shortStopLossValue : na, "做空止损", color=color.red, style=plot.style_linebr, linewidth=1)
+plot(strategy.position_size < 0 ? shortTakeProfit : na, "做空止盈", color=color.green, style=plot.style_linebr, linewidth=1)
+
+// 绘制买卖信号
+plotshape(buysignal, title='Trader XO 买入信号', text='BUY', style=shape.triangleup, location=location.belowbar, color=color.new(color.green, 0), textcolor=color.new(color.white, 0), size=size.small)
+plotshape(sellsignal, title='Trader XO 卖出信号', text='SELL', style=shape.triangledown, location=location.abovebar, color=color.new(color.red, 0), textcolor=color.new(color.white, 0), size=size.small)
+
+// 绘制策略入场信号
+plotshape(longCondition, title='策略做多信号', text='LONG', style=shape.labelup, location=location.belowbar, color=color.new(color.green, 0), textcolor=color.new(color.white, 0), size=size.normal)
+plotshape(shortCondition, title='策略做空信号', text='SHORT', style=shape.labeldown, location=location.abovebar, color=color.new(color.red, 0), textcolor=color.new(color.white, 0), size=size.normal)
+
+// 背景颜色（显示趋势）
+bgcolor(macdBullish and priceAboveEMA ? color.new(color.green, 95) : macdBearish and priceBelowEMA ? color.new(color.red, 95) : na, title="趋势背景")
+
