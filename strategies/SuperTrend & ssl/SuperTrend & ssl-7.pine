@@ -1,6 +1,5 @@
 //@version=6
-strategy('SuperTrend & ssl-7', overlay=true, default_qty_value=100, default_qty_type=strategy.cash, commission_value=0.07, initial_capital=100, max_lines_count=500, max_labels_count=500, max_bars_back=500) // 定义策略名称并显示在价格图表上
-
+strategy('SuperTrend & ssl-7', overlay=true, default_qty_value=100, default_qty_type=strategy.cash, commission_value=0.07, initial_capital=100, margin_long=0, margin_short=0, max_lines_count=500, max_labels_count=500, max_bars_back=500) // 定义策略名称并显示在价格图表上
 // ========== 参数分组（Group 名称） ==========
 group_gmma        = 'GMMA Settings'
 group_supertrend  = 'SuperTrend Settings'
@@ -1325,18 +1324,13 @@ if enableTrendSpeed
 // SSL斜率条件：maxSSL相对于指定周期前的WMA值的上涨幅度 > sslRateUp
 float section3Up1_wma2 = math.max(sslDown[sslSlopeLookback], sslUp[sslSlopeLookback])
 float section3Up1_slopeValue = (maxSSL - section3Up1_wma2) / section3Up1_wma2
-// 把section3Up1_slopeValue曲线绘制出来
-plot(section3Up1_slopeValue * 1000, color=color.red, title="SSL 斜率")
 bool section3Up1_sslSlope = section3Up1_slopeValue > sslRateUp
 bool section3Up1 = maxSSL > minSSL2 and trend == 1 and qqe_longCondition and close > maxSSL and minSSL > minSSL2 and maxSSL > maxSSL2 and math.min(low, low[1]) <= maxSSL and section3Up1_sslSlope
 
 // section3Up2：SSL2入场 - 所有条件都要满足（基于SSL2通道）
 // SSL2斜率条件：maxSSL2相对于指定周期前的WMA值的上涨幅度 > ssl2RateUp
 float section3Up2_wma2 = math.max(sslDown2[ssl2SlopeLookback], sslDown2[ssl2SlopeLookback])
-float section3Up2_ssl2SlopeValue = (maxSSL2 - section3Up2_wma2) / section3Up2_wma2
-// 把section3Up2_ssl2SlopeValue曲线绘制出来
-plot(section3Up2_ssl2SlopeValue * 1000, color=color.blue, title="SSL2 斜率")
-bool section3Up2_ssl2Slope = section3Up2_ssl2SlopeValue > ssl2RateUp
+bool section3Up2_ssl2Slope = (maxSSL2 - section3Up2_wma2) / section3Up2_wma2 > ssl2RateUp
 bool section3Up2 = maxSSL > minSSL2 and trend == 1 and qqe_longConditionSSL2 and close > maxSSL2 and minSSL > minSSL2 and maxSSL > maxSSL2 and math.min(low, low[1]) <= maxSSL2 and section3Up2_ssl2Slope
 
 // section3Up3：ADX入场 - 所有条件都要满足
@@ -1366,19 +1360,13 @@ if buySignal
 // SSL斜率条件：maxSSL相对于指定周期前的WMA值的下跌幅度 < sslRateDown
 float section3Down1_wma2 = math.max(smaHigh[sslSlopeLookback], smaLow[sslSlopeLookback])
 float section3Down1_slopeValue = (maxSSL - section3Down1_wma2) / section3Down1_wma2
-// 把section3Down1_slopeValue曲线绘制出来
-plot(section3Down1_slopeValue * 1000, color=color.red, title="SSL 斜率")
 bool section3Down1_sslSlope = section3Down1_slopeValue < sslRateDown
 bool section3Down1 = minSSL < maxSSL2 and trend == -1 and qqe_shortCondition and close < minSSL and minSSL < minSSL2 and maxSSL < maxSSL2 and math.max(high, high[1]) >= minSSL and section3Down1_sslSlope
 
 // section3Down2：SSL2入场 - 所有条件都要满足（基于SSL2通道）
 // SSL2斜率条件：maxSSL2相对于指定周期前的WMA值的下跌幅度 < ssl2RateDown
 float section3Down2_wma2 = math.max(smaHigh2[ssl2SlopeLookback], smaLow2[ssl2SlopeLookback])
-float section3Down2_ssl2SlopeValue = (maxSSL2 - section3Down2_wma2) / section3Down2_wma2
-// 把section3Down2_ssl2SlopeValue曲线绘制出来
-plot(section3Down2_ssl2SlopeValue * 1000, color=color.blue, title="SSL2 斜率")
-bool section3Down2_ssl2Slope = section3Down2_ssl2SlopeValue < ssl2RateDown
-
+bool section3Down2_ssl2Slope = (maxSSL2 - section3Down2_wma2) / section3Down2_wma2 < ssl2RateDown
 bool section3Down2 = minSSL < maxSSL2 and trend == -1 and qqe_shortConditionSSL2 and close < minSSL2 and minSSL < minSSL2 and maxSSL < maxSSL2 and math.max(high, high[1]) >= minSSL2 and section3Down2_ssl2Slope
 
 // section3Down3：ADX入场 - 所有条件都要满足
