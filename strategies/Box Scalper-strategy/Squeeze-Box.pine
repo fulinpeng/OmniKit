@@ -1,0 +1,170 @@
+//@version=2
+study(title="Squeeze Box [DW]", overlay=true, linktoseries=true)
+//by Donovan Wall
+
+//This is an experimental study designed using data from Bollinger Bands to determine price squeeze ranges and active levels of support and resistance.
+//First, a set of Bollinger Bands using a Coefficient of Variation weighted moving average as the basis is calculated.
+//Then, the relative percentage of current bandwidth to maximum bandwidth over the specified sampling period determines the relative squeeze.
+//The box is outlined by drawing the current highest and lowest source value over the sampling period whenever a squeeze is active.
+//I've included the COVWMA in the visualization for additional confirmation of price activity.
+
+//Custom Bar color scheme is included.
+
+//---------------------------------------------------------------------------------------------------------------------------------------------------------------
+//Updates:
+//Added alternate moving average types. The available moving averages now in this script are:
+//  -Exponential Moving Average
+//  -Simple Moving Average
+//  -Smoothed Moving Average
+//  -Weighted Moving Average
+//  -Volume Weighted Moving Average
+//  -Least Squares Moving Average
+//  -Arnaud Legoux Moving Average
+//  -Hull Moving Average
+//  -Coefficient of Variation Weighted Moving Average
+//  -Fractal Adaptive Moving Average
+//  -Kaufman's Adaptive Moving Average
+
+//Refined the color scheme for both bar colors and the moving averages.
+
+//Please note: Each moving average type generates different box values, so play around with them and find the one that works best for you.
+
+//-----------------------------------------------------------------------------------------------------------------------------------------------------------------
+//Inputs
+//-----------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+//Source
+src = input(defval=hlc3, title="Source")
+
+//Periods
+per = input(defval=21, minval=1, title="Sampling Period")
+
+//MA Type
+matype = input(defval="COVWMA", title="MA Type (Available Inputs: 'EMA', 'SMA', 'SMMA', 'WMA', 'VWMA', 'LSMA', 'ALMA', 'HULLMA', 'COVWMA', 'FRAMA', 'KAMA')")
+
+//Standard Deviations
+ndev = input(defval=2, minval=1, title="Number of Deviations for Squeeze Calculation")
+
+//Relative Squeeze Threshold
+sr = input(defval=50, minval=0, maxval=100, step=0.01, title="Relative Squeeze % Threshold")
+
+//LSMA Offset
+loff = input(defval=0, minval=0, title="Offset (if LSMA)")
+
+//ALMA Offset and Sigma
+aoff  = input(defval=0.85, step=0.01, minval=0, title="Offset (if ALMA)")
+sigma = input(defval=6,               minval=0, title="Sigma (if ALMA)") 
+
+//FRAMA Coefficient
+w = input(defval=-4.6, title="Coefficient (if FRAMA)")
+
+//KAMA Smoothing Constant
+fast = input(defval=0.666,  step=0.001,  title="Smoothing Constant Fast End (if KAMA)")
+slow = input(defval=0.0645, step=0.0001, title="Smoothing Constant Slow End (if KAMA)")
+
+//-----------------------------------------------------------------------------------------------------------------------------------------------------------------
+//Definitions
+//-----------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+//EMA
+ema = ema(src, per)
+
+//SMA
+sma = sma(src, per)
+
+//SMMA
+smma = 0.0
+smma := na(smma[1]) ? sma(src, per) : (smma[1]*(per - 1) + src)/per
+
+//WMA
+wma = wma(src, per)
+
+//VWMA
+vmp  = src*volume
+vwma = sum(vmp, per)/sum(volume, per)
+
+//LSMA
+lsma  = linreg(src, per, loff)
+
+//ALMA
+alma = alma(src, per, aoff, sigma)
+
+//Hull MA
+hullma = wma(2*wma(src, per/2)-wma(src, per), round(sqrt(per)))
+
+//COVWMA
+covwma(a, b) =>
+    cov    = stdev(a, b)/sma(a, b)
+    cw     = a*cov
+    covwma = sum(cw, b)/sum(cov, b)
+cma = covwma(src, per)
+
+//FRAMA
+frama(a, b) =>
+    n3    = (highest(high, b) - lowest(low, b))/b
+    hd2   = highest(high, b/2)
+    ld2   = lowest(low, b/2)
+    n2    = (hd2 - ld2)/(b/2)
+    n1    = (hd2[b/2] - ld2[b/2])/(b/2)
+    dim   = (n1 > 0) and (n2 > 0) and (n3 > 0) ? (log(n1 + n2) - log(n3))/log(2) : 0
+    alpha = exp(w*(dim - 1))
+    sc    = (alpha < 0.01 ? 0.01 : (alpha > 1 ? 1 : alpha))
+    frama = cum(1)<=2*b ? a : (a*sc) + nz(frama[1])*(1 - sc)
+fma = frama(src, per)
+
+//KAMA
+kama(a, b)=>
+    dist   = abs(a[0] - a[1])
+    signal = abs(a - a[b])
+    noise  = sum(dist, b)
+    effr   = noise!=0 ? signal/noise : 1
+    sc     = pow(effr*(fast - slow) + slow,2)
+    kama   = nz(kama[1], a) + sc*(a - nz(kama[1], a))
+kma = kama(src, per)
+
+//MA Type
+ma = (matype=="EMA") ? ema : (matype=="SMA") ? sma : (matype=="SMMA") ? smma : (matype=="WMA") ? wma : (matype=="VWMA") ? vwma : (matype=="LSMA") ? lsma : (matype=="ALMA") ? alma : (matype=="HULLMA") ? hullma : (matype=="COVWMA") ? cma : (matype=="FRAMA") ? fma : (matype=="KAMA") ? kma : ema
+
+//Bollinger Bands
+bu = ma + stdev(src, per)*ndev
+bd = ma - stdev(src, per)*ndev
+
+//Bandwidth
+bw = (bu - bd)
+
+//Squeeze Percentage
+buh  = highest(bu, per)
+bdl  = lowest(bd, per)
+brng = buh - bdl
+sqp  = 100*bw/brng
+
+//Squeeze Box
+sqz  = (sqp < sr) ? 1 : 0
+boxh = sqz ? highest(src, per) : src
+boxl = sqz ? lowest(src, per) : src
+bh   = valuewhen(sqz, boxh, 1)
+bl   = valuewhen(sqz, boxl, 1)
+
+//Colors
+boxcolor = src > bh ? lime : src < bl ? red : orange
+bhcolor  = sqz ? boxcolor : na
+blcolor  = sqz ? boxcolor : na
+barcolor = (src > bh) and (src > src[1]) ? lime : (src > bh) and (src < src[1]) ? green : (src < bl) and (src < src[1]) ? red : (src < bl) and (src > src[1]) ? maroon : orange 
+macolor = (ma > ma[1]) ? lime : (ma < ma[1]) ? red : orange
+
+//-----------------------------------------------------------------------------------------------------------------------------------------------------------------
+//Plots
+//-----------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+//Squeeze Box
+bhplot = plot(bh, color=boxcolor, title="Box High Level (Color 0 = Box is an Active Support Zone, Color 1 = Box is an Active Resistance Zone, Color 2 = Price is Within Box)")
+blplot = plot(bl, color=boxcolor, title="Box Low Level (Color 0 = Box is an Active Support Zone, Color 1 = Box is an Active Resistance Zone, Color 2 = Price is Within Box)")
+
+//COVWMA
+maplot = plot(ma, color=macolor, linewidth=2, title="MA (Color 0 = Uptrend, Color 1 = Downtrend, Color 2 = Neutral)")
+
+//Fill
+fill(bhplot, blplot, color=boxcolor, transp=70, title="Box Fill (Same Color Scheme Calculation as Box High and Low)")
+
+//Bar Color
+barcolor(barcolor, title="Bar Color (Color 0 = Uptrend, Color 1 = Pullback From Uptrend, Color 2 = Downtrend, Color 3 = Pullback From Downtrend, Color 4 = Within Box)")

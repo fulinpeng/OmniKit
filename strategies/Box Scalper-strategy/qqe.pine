@@ -1,0 +1,84 @@
+//@version=5
+indicator(title='QQE', overlay=false)
+
+fn_rsi(src, len, mtf)=>
+    change = src - src[mtf]
+
+    up = math.max(change, 0)
+    dn =-math.min(change, 0)
+
+    up_change = ta.rma(up, (len * mtf))
+    dn_change = ta.rma(dn, (len * mtf))
+
+    rsi = dn_change == 0 ? 100 : up_change == 0 ? 0 : 100 - (100 / (1 + up_change / dn_change))
+
+// 14, 5, 8, 4.3
+fn_qqe(len, mtf, smooth, mult)=>
+    wilders = len * 2 - 1
+
+    up = 0.0
+    up_rsi = fn_rsi(low, len, mtf)
+    up_ema = ta.ema(up_rsi, smooth)
+    up_atr = math.abs(up_ema[1] - up_ema)
+    up_diff = ta.ema(ta.ema(up_atr, wilders), wilders) * mult
+    up_ma = up_ema - up_diff
+    up := up_ema[1] > up[1] and up_ema > up[1] ? math.max(up_ma, up[1]) : up_ma
+
+    dn = 0.0
+    dn_rsi = fn_rsi(high, len, mtf)
+    dn_ema = ta.ema(dn_rsi, smooth)
+    dn_atr = math.abs(dn_ema[1] - dn_ema)
+    dn_diff = ta.ema(ta.ema(dn_atr, wilders), wilders) * mult
+    dn_ma = dn_ema + dn_diff
+    dn := dn_ema[1] < dn[1] and dn_ema < dn[1] ? math.min(dn_ma, dn[1]) : dn_ma
+
+    qqe_up = dn_ema > dn[1] and dn_ema[1] <= dn[2] //ta.crossover(dn_ema, dn[1])
+    qqe_dn = up_ema < up[1] and up_ema[1] >= up[2] //ta.crossunder(up_ema, up[1])
+    [qqe_up, qqe_dn, up_ema, dn_ema, up, dn]
+
+QQE_Group       = 'QQE'
+QQE_Length      = input.int(14,             title='RSI Length',     group=QQE_Group,        minval=1,       step=1)
+QQE_Mtf         = input.int(5,              title='MTF Mult',       group=QQE_Group,        minval=1,       step=1)
+QQE_Smooth      = input.int(8,              title='RSI Smooth',     group=QQE_Group,        minval=1,       step=1)
+QQE_Mult        = input.float(4.3,          title='QQE Mult',       group=QQE_Group,        minval=1,       step=0.1)
+
+[QQE_up, QQE_dn, QQE_up_ema, QQE_dn_ema, QQE_up_line, QQE_dn_line] = fn_qqe(QQE_Length, QQE_Mtf, QQE_Smooth, QQE_Mult)
+
+QQE_direction = 0
+QQE_direction := QQE_up ? 1 : QQE_dn ? -1 : nz(QQE_direction[1])
+
+// =================================================================================================
+
+ZON_Group       = 'QQE ZONE'
+ZON_Length      = input.int(5,              title='Length',         group=ZON_Group,        minval=1,       step=1)
+ZON_Upper       = input.float(75,           title='Upper',          group=ZON_Group,        minval=0,       step=1)
+ZON_Lower       = input.float(22,           title='Lower',          group=ZON_Group,        minval=0,       step=1)
+
+qqe_rsi = ta.rsi(close, ZON_Length)
+barssince_qqe_up = ta.barssince(QQE_up)
+barssince_qqe_dn = ta.barssince(QQE_dn)
+
+barssince_rsi_up = ta.barssince(qqe_rsi > ZON_Upper)
+barssince_rsi_dn = ta.barssince(qqe_rsi < ZON_Lower)
+qqe_was_force_up = QQE_dn and barssince_qqe_up[1] >= barssince_rsi_up[1]
+qqe_was_force_dn = QQE_up and barssince_qqe_dn[1] >= barssince_rsi_dn[1]
+
+// 绘制 QQE 指标
+plot(QQE_up_ema, color=color.green, title='QQE Up EMA', linewidth=2)
+plot(QQE_dn_ema, color=color.red, title='QQE Dn EMA', linewidth=2)
+plot(QQE_up_line, color=color.lime, title='QQE Up Line', linewidth=1)
+plot(QQE_dn_line, color=color.maroon, title='QQE Dn Line', linewidth=1)
+
+// 绘制信号
+plotshape(QQE_up, style=shape.triangleup, location=location.belowbar, color=color.green, size=size.small, title='QQE Up Signal')
+plotshape(QQE_dn, style=shape.triangledown, location=location.abovebar, color=color.red, size=size.small, title='QQE Dn Signal')
+
+// 绘制 RSI
+plot(qqe_rsi, color=color.blue, title='RSI', linewidth=1)
+hline(ZON_Upper, "Upper", color=color.gray, linestyle=hline.style_dashed)
+hline(ZON_Lower, "Lower", color=color.gray, linestyle=hline.style_dashed)
+hline(50, "Mid", color=color.gray, linestyle=hline.style_dotted)
+
+// 绘制强制信号
+bgcolor(qqe_was_force_up ? color.new(color.lime, 90) : qqe_was_force_dn ? color.new(color.red, 90) : na, title='Force Signal Background')
+

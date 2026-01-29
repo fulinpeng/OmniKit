@@ -1,7 +1,7 @@
 //@version=5
-strategy(title='Box Scalper-Strategy-0-boll', overlay=true, initial_capital=1000, default_qty_type=strategy.cash, default_qty_value=1000, commission_type=strategy.commission.percent, commission_value=0.04)
+strategy(title='Box Scalper-Strategy-0-Squeeze', overlay=true, initial_capital=1000, default_qty_type=strategy.cash, default_qty_value=1000, commission_type=strategy.commission.percent, commission_value=0.04)
 
-// BOLL代替box的版本
+// Squeeze box 版本
 
 start       = input.time(timestamp('2020-01-01T00:00:00'), group='Back Test', title='Start')
 finish      = input.time(timestamp('2030-12-31T00:00:00'), group='Back Test', title='Finish')
@@ -134,15 +134,87 @@ plot(SSL, title='SSL', linewidth=3, color=SSL_color)
 // ----------------|------------------------------|------------------------------|----------------------|-----------------|
 BOX_Group       = 'Squeeze Box'
 BOX_Period      = input.int(24,             title='Periods',        group=BOX_Group,        minval=1,       step=1)
-BOX_Deviation   = input.int(3,              title='Deviation',      group=BOX_Group,        minval=1,       step=1)
-BOX_Threshold   = input.int(50,             title='Threshold',      group=BOX_Group,        minval=1,       step=1)
+BOX_Deviation   = input.int(2,              title='Deviation',      group=BOX_Group,        minval=1,       step=1)
+BOX_Threshold   = input.float(50,           title='Threshold(%)',   group=BOX_Group,        minval=0,       maxval=100, step=0.01)
+BOX_Source      = input.source(hlc3,        title='Source',         group=BOX_Group)
+BOX_MA_Type     = input.string('COVWMA',    title='MA Type',        group=BOX_Group,        options=['EMA', 'SMA', 'SMMA', 'WMA', 'VWMA', 'LSMA', 'ALMA', 'HULLMA', 'COVWMA', 'FRAMA', 'KAMA'])
 
-// Box 布林带 计算
-BOX_basis = ta.sma(close, BOX_Period)
-BOX_dev = BOX_Deviation * ta.stdev(close, BOX_Period)
-BOX_bh = BOX_basis + BOX_dev
-BOX_bl = BOX_basis - BOX_dev
-boxcolor = close > BOX_basis ? color.green : color.red// close 高于中轨为绿色，否则为红色
+// Squeeze Box 完整计算逻辑 - MA计算函数
+fn_get_ma(src, per, matype) =>
+    // EMA
+    ema_val = ta.ema(src, per)
+    // SMA
+    sma_val = ta.sma(src, per)
+    // SMMA
+    var float smma_val = na
+    smma_val := na(smma_val[1]) ? ta.sma(src, per) : (smma_val[1]*(per - 1) + src)/per
+    // WMA
+    wma_val = ta.wma(src, per)
+    // VWMA
+    vmp = src*volume
+    vwma_val = math.sum(vmp, per)/math.sum(volume, per)
+    // LSMA
+    lsma_val = ta.linreg(src, per, 0)
+    // ALMA
+    alma_offset = 0.85
+    alma_sigma = 6
+    alma_val = ta.alma(src, per, alma_offset, alma_sigma)
+    // Hull MA
+    hullma_val = ta.wma(2*ta.wma(src, per/2)-ta.wma(src, per), math.round(math.sqrt(per)))
+    // COVWMA
+    cov = ta.stdev(src, per)/ta.sma(src, per)
+    cw = src*cov
+    covwma_val = math.sum(cw, per)/math.sum(cov, per)
+    // FRAMA
+    var float frama_val = na
+    n3 = (ta.highest(high, per) - ta.lowest(low, per))/per
+    hd2 = ta.highest(high, per/2)
+    ld2 = ta.lowest(low, per/2)
+    n2 = (hd2 - ld2)/(per/2)
+    n1 = (hd2[per/2] - ld2[per/2])/(per/2)
+    dim = (n1 > 0) and (n2 > 0) and (n3 > 0) ? (math.log(n1 + n2) - math.log(n3))/math.log(2) : 0
+    w_coef = -4.6
+    alpha = math.exp(w_coef*(dim - 1))
+    sc = (alpha < 0.01 ? 0.01 : (alpha > 1 ? 1 : alpha))
+    frama_val := na(frama_val[1]) ? src : (src*sc) + frama_val[1]*(1 - sc)
+    // KAMA
+    var float kama_val = na
+    fast_kama = 0.666
+    slow_kama = 0.0645
+    dist = math.abs(src - src[1])
+    signal = math.abs(src - src[per])
+    noise = math.sum(dist, per)
+    effr = noise != 0 ? signal/noise : 1
+    sc_kama = math.pow(effr*(fast_kama - slow_kama) + slow_kama, 2)
+    kama_val := na(kama_val[1]) ? src : kama_val[1] + sc_kama*(src - kama_val[1])
+    
+    // 选择MA类型
+    (matype=="EMA") ? ema_val : (matype=="SMA") ? sma_val : (matype=="SMMA") ? smma_val : (matype=="WMA") ? wma_val : (matype=="VWMA") ? vwma_val : (matype=="LSMA") ? lsma_val : (matype=="ALMA") ? alma_val : (matype=="HULLMA") ? hullma_val : (matype=="COVWMA") ? covwma_val : (matype=="FRAMA") ? frama_val : (matype=="KAMA") ? kama_val : covwma_val
+
+// Squeeze Box 计算
+BOX_basis = fn_get_ma(BOX_Source, BOX_Period, BOX_MA_Type)
+BOX_bu = BOX_basis + ta.stdev(BOX_Source, BOX_Period)*BOX_Deviation
+BOX_bd = BOX_basis - ta.stdev(BOX_Source, BOX_Period)*BOX_Deviation
+BOX_bw = (BOX_bu - BOX_bd)
+BOX_buh = ta.highest(BOX_bu, BOX_Period)
+BOX_bdl = ta.lowest(BOX_bd, BOX_Period)
+BOX_brng = BOX_buh - BOX_bdl
+BOX_sqp = BOX_brng != 0 ? 100*BOX_bw/BOX_brng : 100
+BOX_sqz = (BOX_sqp < BOX_Threshold) ? 1 : 0
+BOX_boxh = BOX_sqz ? ta.highest(BOX_Source, BOX_Period) : BOX_Source
+BOX_boxl = BOX_sqz ? ta.lowest(BOX_Source, BOX_Period) : BOX_Source
+
+// 保持 Squeeze Box 的上下轨值
+var float BOX_bh = na
+var float BOX_bl = na
+if BOX_sqz
+    BOX_bh := BOX_boxh
+    BOX_bl := BOX_boxl
+else
+    BOX_bh := na(BOX_bh[1]) ? ta.highest(BOX_Source, BOX_Period) : BOX_bh[1]
+    BOX_bl := na(BOX_bl[1]) ? ta.lowest(BOX_Source, BOX_Period) : BOX_bl[1]
+
+boxcolor = close > BOX_bh ? color.lime : close < BOX_bl ? color.red : color.orange
 
 plot(BOX_basis, color=color.rgb(120, 123, 134, 49), title="Box basis")
 bhplot = plot(BOX_bh, color=color.new(boxcolor, 50), title="Box High Level")
@@ -268,6 +340,7 @@ PIP_ts2         = close * TP_Ts2 / syminfo.mintick / 100
 TICKER = syminfo.prefix + ':' + syminfo.ticker
 
 week = dayofweek
+// 使用 Squeeze Box 的上下轨进行交易信号判断
 BULL = (close > SSL and QQE_up and not qqe_was_force_dn and (week != 7 and week != 1 or ADX > ADX_Trend)) or (close > SSL and ta.crossover(close, BOX_bl))
 BEAR = (close < SSL and QQE_dn and not qqe_was_force_up and (week != 7 and week != 1 or ADX > ADX_Trend)) or (close < SSL and ta.crossunder(close, BOX_bh))
 

@@ -1,0 +1,2017 @@
+//@version=6
+strategy('SuperTrend & ssl-8', overlay=true, default_qty_value=100, default_qty_type=strategy.cash, commission_value=0.07, initial_capital=100, margin_long=0, margin_short=0, max_lines_count=500, max_labels_count=500, max_bars_back=500) // 定义策略名称并显示在价格图表上
+// ========== 参数分组（Group 名称） ==========
+group_gmma        = 'GMMA Settings'
+group_supertrend  = 'SuperTrend Settings'
+group_supertrend_mini = 'SuperTrend Mini Settings'
+group_ssl         = 'SSL Settings'
+group_fbb         = 'Fibonacci Bollinger Bands'
+group_wavetrend   = 'WaveTrend Settings'
+group_risk        = 'Risk Management'
+group_adx         = 'ADX Settings'
+group_structures  = 'Structures (BOS/CHoCH) - Current Timeframe'
+group_fvg         = 'Fair Value Gap (FVG) - Multi-Timeframe'
+group_fibo        = 'Structure Fibonacci'
+group_trendline   = 'Trendline Breakouts With Targets'
+
+// ========== Range Filter - B&S Signals swiming free ==========
+//Range Size Function// ————— Inputs —————
+rng_src = close // input.source(close, "Swing Source", group="Range Filter (Swing)")
+rng_per = 60 // input.int(60, minval=1, step=5, title="Swing Period", group="Range Filter (Swing)")
+rng_qty = 2.5 // input.float(2.5, minval=0.0000001, step=0.1, title="Swing Multiplier", group="Range Filter (Swing)")
+use_barcolor = false // input.bool(false, title="Swing Bar Colors On/Off", group="Range Filter (Swing)")
+
+// ————— Range Size Calculation —————
+rng_size(x, qty, n) =>
+    wper  = (n * 2) - 1
+    avrng = ta.ema(math.abs(x - x[1]), n)
+    AC    = ta.ema(avrng, wper) * qty
+    AC
+
+// ————— Range Filter Function —————
+rng_filt(x, rng_, n) =>
+    r = rng_
+    var rfilt = array.new_float(2, x)
+    array.set(rfilt, 1, array.get(rfilt, 0))
+    if x - r > array.get(rfilt, 1)
+        array.set(rfilt, 0, x - r)
+    if x + r < array.get(rfilt, 1)
+        array.set(rfilt, 0, x + r)
+    rng_filt1 = array.get(rfilt, 0)
+    hi_band = rng_filt1 + r
+    lo_band = rng_filt1 - r
+    [hi_band, lo_band, rng_filt1]
+
+// ————— Compute Range Filter —————
+[h_band, l_band, filt] = rng_filt(rng_src, rng_size(rng_src, rng_qty, rng_per), rng_per)
+
+// ————— Direction Conditions —————
+var float fdir = na
+fdir := filt > filt[1] ? 1 : filt < filt[1] ? -1 : fdir
+upward   = fdir == 1 ? 1 : 0
+downward = fdir == -1 ? 1 : 0
+
+// ————— Trade Conditions —————
+longCond  = (rng_src > filt and rng_src > rng_src[1] and upward > 0) or (rng_src > filt and rng_src < rng_src[1] and upward > 0)
+shortCond = (rng_src < filt and rng_src < rng_src[1] and downward > 0) or (rng_src < filt and rng_src > rng_src[1] and downward > 0)
+
+var int CondIni = 0
+CondIni := longCond ? 1 : shortCond ? -1 : CondIni[1]
+longCondition  = longCond and CondIni[1] == -1
+shortCondition = shortCond and CondIni[1] == 1
+
+// ————— Color Settings —————
+filt_color = bool(upward) ? color.new(#05ff9b, 0) : bool(downward) ? color.new(#ff0583, 0) : color.new(#cccccc, 0)
+// bar_color  = upward and rng_src > filt ? (rng_src > rng_src[1] ? color.new(#05ff9b, 85) : color.new(#00b36b, 85)) :
+//              downward and rng_src < filt ? (rng_src < rng_src[1] ? color.new(#ff0583, 85) : color.new(#b8005d, 85)) :
+//              color.new(#cccccc, 90)
+
+// ————— Plots —————
+filt_plot = plot(filt, color=filt_color, linewidth=2, title="Filter")
+
+// h_band_plot = plot(h_band, color=color.new(#05ff9b, 85), title="High Band")
+// l_band_plot = plot(l_band, color=color.new(#ff0583, 85), title="Low Band")
+// fill(h_band_plot, filt_plot, color=color.new(#00b36b, 85), title="High Band Fill")
+// fill(l_band_plot, filt_plot, color=color.new(#b8005d, 85), title="Low Band Fill")
+// barcolor(use_barcolor ? bar_color : na)
+
+// ————— Signal Labels —————
+// plotshape(longCondition, title="Buy Signal", text="BUY", textcolor=color.white, style=shape.labelup, size=size.normal, location=location.belowbar, color=color.new(color.green, 0))
+// plotshape(shortCondition, title="Sell Signal", text="SELL", textcolor=color.white, style=shape.labeldown, size=size.normal, location=location.abovebar, color=color.new(color.red, 0))
+
+// ————— Alerts（可启用） —————
+// alertcondition(longCondition, title="Buy Alert", message="BUY")
+// alertcondition(shortCondition, title="Sell Alert", message="SELL")
+
+
+
+// ========== GMMA 参数设置 ==========
+showGMMA = input.bool(title='展示GMMA', defval = false, group=group_gmma)
+
+_Period1 = 3 // input.int(3, "EMA1 Period", minval=1, group=group_gmma)
+_Period2 = 5 // input.int(5, "EMA2 Period", minval=1, group=group_gmma)
+_Period3 = 8 // input.int(8, "EMA3 Period", minval=1, group=group_gmma)
+_Period4 = 10 // input.int(10, "EMA4 Period", minval=1, group=group_gmma)
+_Period5 = 12 // input.int(12, "EMA5 Period", minval=1, group=group_gmma)
+_Period6 = 15 // input.int(15, "EMA6 Period", minval=1, group=group_gmma)
+_Period7 = 30 // input.int(30, "EMA7 Period", minval=1, group=group_gmma)
+_Period8 = 35 // input.int(35, "EMA8 Period", minval=1, group=group_gmma)
+_Period9 = 40 // input.int(40, "EMA9 Period", minval=1, group=group_gmma)
+_Period10 = 45 // input.int(45, "EMA10 Period", minval=1, group=group_gmma)
+_Period11 = 50 // input.int(50, "EMA11 Period", minval=1, group=group_gmma)
+_Period12 = 60 // input.int(60, "EMA12 Period", minval=1, group=group_gmma)
+
+// ========== GMMA 计算 ==========
+ema1 = ta.ema(close, _Period1)
+ema2 = ta.ema(close, _Period2)
+ema3 = ta.ema(close, _Period3)
+ema4 = ta.ema(close, _Period4)
+ema5 = ta.ema(close, _Period5)
+ema6 = ta.ema(close, _Period6)
+ema7 = ta.ema(close, _Period7)
+ema8 = ta.ema(close, _Period8)
+ema9 = ta.ema(close, _Period9)
+ema10 = ta.ema(close, _Period10)
+ema11 = ta.ema(close, _Period11)
+ema12 = ta.ema(close, _Period12)
+
+// ========== GMMA 绘制 ==========
+plot(showGMMA ? ema1 : na, color=color.green, title="short1")
+plot(showGMMA ? ema2 : na, color=color.green, title="short2")
+plot(showGMMA ? ema3 : na, color=color.green, title="short3")
+plot(showGMMA ? ema4 : na, color=color.green, title="short4")
+plot(showGMMA ? ema5 : na, color=color.green, title="short5")
+plot(showGMMA ? ema6 : na, color=color.green, title="short6")
+
+plot(showGMMA ? ema7 : na, color=color.red, title="long1")
+plot(showGMMA ? ema8 : na, color=color.red, title="long2")
+plot(showGMMA ? ema9 : na, color=color.red, title="long3")
+plot(showGMMA ? ema10 : na, color=color.red, title="long4")
+plot(showGMMA ? ema11 : na, color=color.red, title="long5")
+plot(showGMMA ? ema12 : na, color=color.red, title="long6")
+
+// ==========================================================================================
+//                             SuperTrend 计算函数（可复用）
+// ==========================================================================================
+
+// SuperTrend 计算函数（返回 lowerBand 和 upperBand，趋势状态在全局作用域管理）
+calcSuperTrendBands(int periods, float multiplier, series float src, bool changeATR) =>
+    // ATR 计算
+    float atr2 = ta.sma(ta.tr, periods)
+    float atr = changeATR ? ta.atr(periods) : atr2
+    
+    // SuperTrend 计算
+    // lowerBand: 上升趋势的下轨（支撑线），当 trend == 1 时使用
+    float lowerBand = src - multiplier * atr
+    float lowerBand1 = nz(lowerBand[1], lowerBand)
+    lowerBand := close[1] > lowerBand1 ? math.max(lowerBand, lowerBand1) : lowerBand
+    
+    // upperBand: 下降趋势的上轨（阻力线），当 trend == -1 时使用
+    float upperBand = src + multiplier * atr
+    float upperBand1 = nz(upperBand[1], upperBand)
+    upperBand := close[1] < upperBand1 ? math.min(upperBand, upperBand1) : upperBand
+    
+    [lowerBand, upperBand]
+
+// ========== SuperTrend 参数设置 ==========
+Periods = input.int(title='SuperTrend ATR 周期', defval=48, minval=1, group=group_supertrend)
+src = input(hl2, title='SuperTrend数据源', group=group_supertrend)
+Multiplier = input.float(title='SuperTrend ATR 乘数', step=0.1, defval=12, minval=0.1, group=group_supertrend)
+changeATR = input.bool(title='切换 ATR 计算方法？', defval=true, group=group_supertrend)
+showsignals = false // input.bool(title='显示买入/卖出信号？', defval=false, group=group_supertrend)
+highlighting = false // input.bool(title='高亮趋势？', defval=false, group=group_supertrend)
+
+
+// 主 SuperTrend 趋势状态管理（在全局作用域使用 var）
+var int trend = 1
+// 计算主 SuperTrend 的上下轨
+[lowerBand, upperBand] = calcSuperTrendBands(Periods, Multiplier, src, changeATR)
+trend := nz(trend[1], trend)
+lowerBand1 = nz(lowerBand[1], lowerBand)
+upperBand1 = nz(upperBand[1], upperBand)
+trend := (trend == -1 and close > upperBand1) ? 1 : (trend == 1 and close < lowerBand1 ? -1 : trend)
+
+// 绘制趋势线
+upPlot = plot(lowerBand, title='上升趋势', style=plot.style_linebr, linewidth=1, color=trend == 1 ? color.new(#8df978, 60) : color.new(#ff52ff, 60))
+dnPlot = plot(upperBand, title='下降趋势', style=plot.style_linebr, linewidth=1, color=trend == 1 ? color.new(#8df978, 60) : color.new(#ff52ff, 60))
+
+// ========== SuperTrend 上下轨（提前定义供入场条件使用）==========
+maxSuper = math.max(lowerBand, upperBand)
+minSuper = math.min(lowerBand, upperBand)
+
+// ========== SuperTrend Mini 参数设置 ==========
+bool showSuperTrendMini = input.bool(title='显示 SuperTrend Mini', defval=true, group=group_supertrend_mini)
+int miniPeriods = 10 // 固定为 10
+float miniMultiplier = 3.0 // 固定为 3.0
+series float miniSrc = hl2 // 固定使用 hl2
+bool miniChangeATR = true // 固定为 true
+bool miniShowsignals = input.bool(title='显示买入/卖出信号', defval=true, group=group_supertrend_mini)
+bool miniHighlighting = input.bool(title='高亮趋势', defval=true, group=group_supertrend_mini)
+
+// 计算 SuperTrend Mini 的上下轨
+[miniLowerBand, miniUpperBand] = calcSuperTrendBands(miniPeriods, miniMultiplier, miniSrc, miniChangeATR)
+
+// SuperTrend Mini 趋势状态管理（在全局作用域使用 var）
+var int miniTrend = 1
+miniTrend := nz(miniTrend[1], miniTrend)
+float miniLowerBand1 = nz(miniLowerBand[1], miniLowerBand)
+float miniUpperBand1 = nz(miniUpperBand[1], miniUpperBand)
+miniTrend := (miniTrend == -1 and close > miniUpperBand1) ? 1 : (miniTrend == 1 and close < miniLowerBand1 ? -1 : miniTrend)
+
+// SuperTrend Mini 绘制（参考 superTrend.pine 的样式）
+// 注意：plot 函数必须在全局作用域调用，不能放在 if 块内
+// 绘制趋势线（始终显示上下轨，根据趋势方向改变颜色，透明度40%）
+// 上升趋势：绿色，下降趋势：红色
+miniTrendColor = miniTrend == 1 ? color.new(color.green, 20) : color.new(color.red, 20)
+miniUpPlot = plot(showSuperTrendMini ? miniLowerBand : na, title="Mini Up Trend", style=plot.style_linebr, linewidth=2, color=miniTrendColor)
+miniDnPlot = plot(showSuperTrendMini ? miniUpperBand : na, title="Mini Down Trend", style=plot.style_linebr, linewidth=2, color=miniTrendColor)
+
+// 上下轨之间填充背景色（上升趋势绿色10%透明度，下降趋势红色10%透明度）
+miniFillColor = showSuperTrendMini ? (miniTrend == 1 ? color.new(color.green, 90) : color.new(color.red, 90)) : na
+fill(miniUpPlot, miniDnPlot, title="Mini Trend Fill", color=miniFillColor)
+
+// ========== SSL 相关参数 ==========
+sslRateUp = input.float(title='SSL 斜率阈值 - 多头 (up)', defval=0.00008, step=0.0001, group=group_ssl)
+sslRateDown = input.float(title='SSL 斜率阈值 - 空头 (down)', defval=-0.00006, step=0.0001, group=group_ssl)
+// SSL2 斜率参数（用于 SSL2 入场方式）
+ssl2RateUp = input.float(title='SSL2 斜率阈值 - 多头 (up)', defval=0.0001, step=0.0001, group=group_ssl, tooltip="SSL2 通道斜率阈值，用于 SSL2 入场方式")
+ssl2RateDown = input.float(title='SSL2 斜率阈值 - 空头 (down)', defval=-0.0001, step=0.0001, group=group_ssl, tooltip="SSL2 通道斜率阈值，用于 SSL2 入场方式")
+// SSL 斜率计算周期（用于计算斜率时的回看周期）
+sslSlopeLookback = input.int(title='SSL 斜率计算周期', defval=21, minval=1, step=1, group=group_ssl, tooltip="计算 SSL 斜率时回看的 K 线数量，默认 21")
+// SSL2 斜率计算周期（用于计算斜率时的回看周期）
+ssl2SlopeLookback = input.int(title='SSL2 斜率计算周期', defval=21, minval=1, step=1, group=group_ssl, tooltip="计算 SSL2 斜率时回看的 K 线数量，默认 21")
+
+// ========== SSL 普通图表 ==========
+
+period = 200 // input.int(title="SSL Period", defval=200, minval=1, group=group_ssl)
+len = 200 // input.int(title="SSL WMA Length", defval=200, minval=1, group=group_ssl)
+
+smaHigh = ta.wma(high, len)
+smaLow  = ta.wma(low, len)
+
+var float Hlv = na
+Hlv := close > smaHigh ? 1 : close < smaLow ? -1 : Hlv[1]
+
+sslDown = Hlv < 0 ? smaHigh : smaLow
+sslUp   = Hlv < 0 ? smaLow  : smaHigh
+
+// 画出 SSL 上下轨（青色，不再根据K线上穿下穿改变颜色）
+p1 = plot(sslDown, linewidth=1, color=color.new(color.aqua, 80))
+p2 = plot(sslUp, linewidth=1, color=color.new(color.aqua, 80))
+
+// 填充区域（固定青色）
+fill(p1, p2, color=color.new(color.aqua, 80))
+
+// ========== SSL2 普通图表（period和len为原值的3倍）==========
+period2 = period * 3
+len2 = len * 3
+
+smaHigh2 = ta.wma(high, len2)
+smaLow2  = ta.wma(low, len2)
+
+var float Hlv2 = na
+Hlv2 := close > smaHigh2 ? 1 : close < smaLow2 ? -1 : Hlv2[1]
+
+sslDown2 = Hlv2 < 0 ? smaHigh2 : smaLow2
+sslUp2   = Hlv2 < 0 ? smaLow2  : smaHigh2
+
+// 画出 SSL2 上下轨（蓝色，不再根据K线上穿下穿改变颜色）
+p3 = plot(sslDown2, linewidth=1, color=color.new(color.blue, 80))
+p4 = plot(sslUp2, linewidth=1, color=color.new(color.blue, 80))
+
+// 填充区域（固定蓝色）
+fill(p3, p4, color=color.new(color.blue, 80))
+
+// ========== SSL3 普通图表（period和len为原值的12倍）==========
+period3 = period * 12
+len3 = len * 12
+
+smaHigh3 = ta.wma(high, len3)
+smaLow3  = ta.wma(low, len3)
+
+var float Hlv3 = na
+Hlv3 := close > smaHigh3 ? 1 : close < smaLow3 ? -1 : Hlv3[1]
+
+sslDown3 = Hlv3 < 0 ? smaHigh3 : smaLow3
+sslUp3   = Hlv3 < 0 ? smaLow3  : smaHigh3
+
+// 画出 SSL3 上下轨（红色，不再根据K线上穿下穿改变颜色）
+p31 = plot(sslDown3, linewidth=1, color=color.new(color.red, 60))
+p32 = plot(sslUp3, linewidth=1, color=color.new(color.red, 60))
+
+// 填充区域（固定红色）
+fill(p31, p32, color=color.new(color.red, 60))
+
+
+// ========== Fibonacci Bollinger Bands ==========
+fbb_length = input.int(200, minval=1, title="fbb_length", group=group_fbb)
+fbb_src = input(hlc3, title="fbb_Source", group=group_fbb)
+mult = input.float(3.0, minval=0.001, maxval=50.0, title="fbb_mult", group=group_fbb)
+
+fbb_basis = ta.vwma(fbb_src, fbb_length)
+fbb_dev = mult * ta.stdev(fbb_src, fbb_length)
+
+upper_3 = fbb_basis + (0.5 * fbb_dev)
+upper_4 = fbb_basis + (0.618 * fbb_dev)
+upper_5 = fbb_basis + (0.764 * fbb_dev)
+upper_6 = fbb_basis + (1.0 * fbb_dev)
+upper_7 = fbb_basis + (1.414 * fbb_dev)
+
+lower_3 = fbb_basis - (0.5 * fbb_dev)
+lower_4 = fbb_basis - (0.618 * fbb_dev)
+lower_5 = fbb_basis - (0.764 * fbb_dev)
+lower_6 = fbb_basis - (1.0 * fbb_dev)
+lower_7 = fbb_basis - (1.414 * fbb_dev)
+
+// 上方线
+// p4_fbb = plot(upper_3, color=color.rgb(255, 255, 255, 80), linewidth=1, title="0.5")
+// p4_618_fbb = plot(upper_4, color=color.rgb(255, 255, 255, 80), linewidth=1, title="0.618")
+// p5_fbb = plot(upper_5, color=color.rgb(255, 255, 255, 80), linewidth=1, title="0.764")
+p6 = plot(upper_6, color=color.rgb(255, 82, 82, 80), linewidth=1, title="1")
+p7 = plot(upper_7, color=color.rgb(255, 82, 82, 80), linewidth=1, title="1.414")
+
+// 下方线
+// p16_fbb = plot(lower_3, color=color.rgb(255, 255, 255, 80), linewidth=1, title="-0.5")
+// p16_618_fbb = plot(lower_4, color=color.rgb(255, 255, 255, 80), linewidth=1, title="-0.618")
+// p17_fbb = plot(lower_5, color=color.rgb(255, 255, 255, 80), linewidth=1, title="-0.764")
+p18 = plot(lower_6, color=color.rgb(76, 175, 79, 80), linewidth=1, title="-1")
+p19 = plot(lower_7, color=color.rgb(76, 175, 79, 80), linewidth=1, title="-1.414")
+
+// ===== 灰色填充区域 =====
+fill(p6, p7, color=color.new(#787b86, 80), title="Upper Gray Fill")
+fill(p18, p19, color=color.new(color.gray, 80), title="Lower Gray Fill")
+
+
+
+
+// ========== WaveTrend Cross ==========
+
+// === 参数 ===
+n1 = 10 // input.int(10, "WT Channel Length", group=group_wavetrend)
+n2 = 21 // input.int(21, "WT Average Length", group=group_wavetrend)
+
+obLevel1 = 60 // input.int(60, "OverBought Level 1 (+60)", group=group_wavetrend)
+obLevel2 = 53 // input.int(53, "OverBought Level 2 (+53)", group=group_wavetrend)
+midLevelHigh = 50 // input.int(50, "看空门槛线 (+50)", group=group_wavetrend)
+midLevelLow = -50 // input.int(-50, "看多门槛线 (-50)", group=group_wavetrend)
+osLevel2 = -53 // input.int(-53, "OverSold Level 2 (-53)", group=group_wavetrend)
+osLevel1 = -60 // input.int(-60, "OverSold Level 1 (-60)", group=group_wavetrend)
+
+// === WaveTrend 指标计算 ===
+ap = hlc3 
+esa = ta.ema(ap, n1)
+d = ta.ema(math.abs(ap - esa), n1)
+ci = (ap - esa) / (0.015 * d)
+tci = ta.ema(ci, n2)
+
+wt1 = tci
+wt2 = ta.sma(wt1, 4)
+
+// === 策略信号 ===
+wtlongSignal  = ta.crossover(wt1, wt2) and wt1 < midLevelLow and wt2 < midLevelLow
+wtShortSignal = ta.crossunder(wt1, wt2) and wt1 > midLevelHigh and wt2 > midLevelHigh
+
+// ========== ADX Indicator ==========
+showADX = true
+adx_len = input.int(12, title="ADX 周期", minval=1, group=group_adx)
+adx_th = input.float(20.0, title="ADX 阈值", minval=0.0, group=group_adx)
+adx_threshold_low = input.float(20.0, title="ADX 入场阈值下限", minval=0.0, group=group_adx, tooltip="ADX 入场条件中的下限，默认20")
+adx_threshold_high = input.float(40.0, title="ADX 入场阈值上限", minval=0.0, group=group_adx, tooltip="ADX 入场条件中的上限，默认40")
+
+// ADX 计算
+TrueRange = math.max(math.max(high - low, math.abs(high - nz(close[1]))), math.abs(low - nz(close[1])))
+DirectionalMovementPlus = high - nz(high[1]) > nz(low[1]) - low ? math.max(high - nz(high[1]), 0) : 0
+DirectionalMovementMinus = nz(low[1]) - low > high - nz(high[1]) ? math.max(nz(low[1]) - low, 0) : 0
+
+var float SmoothedTrueRange = 0.0
+SmoothedTrueRange := nz(SmoothedTrueRange[1]) - (nz(SmoothedTrueRange[1]) / adx_len) + TrueRange
+
+var float SmoothedDirectionalMovementPlus = 0.0
+SmoothedDirectionalMovementPlus := nz(SmoothedDirectionalMovementPlus[1]) - (nz(SmoothedDirectionalMovementPlus[1]) / adx_len) + DirectionalMovementPlus
+
+var float SmoothedDirectionalMovementMinus = 0.0
+SmoothedDirectionalMovementMinus := nz(SmoothedDirectionalMovementMinus[1]) - (nz(SmoothedDirectionalMovementMinus[1]) / adx_len) + DirectionalMovementMinus
+
+DIPlus = SmoothedDirectionalMovementPlus / SmoothedTrueRange * 100
+DIMinus = SmoothedDirectionalMovementMinus / SmoothedTrueRange * 100
+DX = math.abs(DIPlus - DIMinus) / (DIPlus + DIMinus) * 100
+ADX = ta.sma(DX, adx_len)
+
+// 绘制 ADX 指标（仅在启用时显示，注意：在 overlay 图表上可能不太清晰）
+// plot(showADX ? DIPlus : na, color=color.green, title="DI+", linewidth=1)
+// plot(showADX ? DIMinus : na, color=color.red, title="DI-", linewidth=1)
+// plot(showADX ? ADX : na, color=color.navy, title="ADX", linewidth=2)
+// hline(showADX ? adx_th : na, color=color.black, linestyle=hline.style_dashed, title="ADX Threshold")
+
+// ========== Trend Speed Analyzer 指标 ==========
+group_trendSpeed = "Trend Speed Analyzer"
+enableTrendSpeed = input.bool(false, title="启用 Trend Speed Analyzer", group=group_trendSpeed)
+trendSpeedMaxLength = 50 // input.int(50, minval=1, title="Maximum Length", group=group_trendSpeed, tooltip="Maximum Length: This parameter sets the upper limit for the number of bars considered in the dynamic moving average.")
+trendSpeedAccelMultiplier = 5.0 // input.float(5.0, minval=0.0, step=1.1, title="Accelerator Multiplier", group=group_trendSpeed, tooltip="Accelerator Multiplier: Adjusts the responsiveness of the dynamic moving average to price changes.")
+trendSpeedCollectionPeriod = 100 // input.int(100, step=10, minval=5, title="Collection Period", group=group_trendSpeed, tooltip="Collection Period: Defines the number of bars used to normalize trend speed values.")
+enableTrendSpeedCandles = false // input.bool(false, title="Enable Candles", group=group_trendSpeed, tooltip="Enable Candles: When enabled, the candlesticks on the chart will be color-coded based on the calculated trend speed.")
+enableTrendSpeedTable = false // input.bool(false, title="Enable Table", group=group_trendSpeed, tooltip="Enable Table: Activates a statistical table that provides an overview of key metrics.")
+trendSpeedLookbackPeriod = 100 // input.int(100, minval=1, step=1, title="Lookback Period", group=group_trendSpeed, tooltip="Lookback Period: Determines how many historical bars are used for calculating bullish and bearish wave data.")
+trendSpeedUpColor = color.lime // input.color(color.lime, title="Dynamic Trend Up", group=group_trendSpeed, inline="trendColor")
+trendSpeedDnColor = color.red // input.color(color.red, title="", group=group_trendSpeed, inline="trendColor")
+trendSpeedUpHistColor1 = color.new(#82ffc3, 80) // input.color(#82ffc3, title="Trend Speed Up", group=group_trendSpeed, inline="upHist")
+trendSpeedUpHistColor2 = color.lime // input.color(color.lime, title="", group=group_trendSpeed, inline="upHist")
+trendSpeedDnHistColor1 = color.new(color.red, 80) // input.color(color.red, title="Trend Speed Dn", group=group_trendSpeed, inline="dnHist")
+trendSpeedDnHistColor2 = color.new(#f78c8c, 80) // input.color(#f78c8c, title="", group=group_trendSpeed, inline="dnHist")
+
+// Trend Speed Analyzer 计算
+// 全局变量定义（在块外定义以便在入场条件中使用）
+var float speed_ts_global = 0.0
+var float trendspeed_ts_global = na
+var float dyn_ema_ts_global = na
+var color speedGradient1_ts_global = color.gray
+var color colour_ts_global = color.gray
+
+if enableTrendSpeed
+    // Dynamic Average
+    counts_diff = close
+    max_abs_counts_diff = ta.highest(math.abs(counts_diff), 200)
+    counts_diff_norm = (counts_diff + max_abs_counts_diff) / (2 * max_abs_counts_diff)
+    dyn_length = 5 + counts_diff_norm * (trendSpeedMaxLength - 5)
+    
+    // Accelerator Factor
+    delta_counts_diff = math.abs(counts_diff - nz(counts_diff[1]))
+    max_delta_counts_diff = ta.highest(delta_counts_diff, 200)
+    max_delta_counts_diff := max_delta_counts_diff == 0 ? 1 : max_delta_counts_diff
+    accel_factor = delta_counts_diff / max_delta_counts_diff
+    
+    // Adjust alpha
+    alpha_base = 2 / (dyn_length + 1)
+    alpha = math.min(1, alpha_base * (1 + accel_factor * trendSpeedAccelMultiplier))
+    
+    // Compute dynamic EMA
+    var float dyn_ema_ts = na
+    dyn_ema_ts := na(dyn_ema_ts[1]) ? close : alpha * close + (1 - alpha) * dyn_ema_ts[1]
+    
+    // Trend Speed（参考 VolumaticVIDYA-ApirineEMA-Strategy.pine）
+    float trend_ts = dyn_ema_ts
+    bullsrc = close
+    bearsrc = close
+    
+    // Trend Data Arrays (v5 compatible)
+    var array<float> bullish_change = array.new<float>()
+    var array<int> bullish_t = array.new_int()
+    var array<float> bearish_change = array.new<float>()
+    var array<int> bearish_t = array.new_int()
+    
+    var int x1_ts = na
+    var float y1_ts = na
+    var int pos_ts = 0
+    var float speed_ts = 0.0
+    c_ts = ta.rma(close, 10)
+    o_ts = ta.rma(open, 10)
+    
+    // First value
+    if na(x1_ts)
+        x1_ts := bar_index
+        y1_ts := o_ts
+    
+    // Trend direction
+    if bullsrc > trend_ts and bullsrc[1] <= trend_ts
+        // Store bearish wave data
+        if array.size(bearish_change) >= 1000
+            array.shift(bearish_change)
+            array.shift(bearish_t)
+        lowest_speed = bar_index - x1_ts > 0 ? ta.lowest(speed_ts, bar_index - x1_ts) : speed_ts
+        array.unshift(bearish_change, lowest_speed)
+        array.unshift(bearish_t, bar_index - x1_ts)
+        x1_ts := bar_index
+        y1_ts := bullsrc
+        pos_ts := 1
+        speed_ts := c_ts - o_ts
+    
+    if bearsrc < trend_ts and bearsrc[1] >= trend_ts
+        // Store bullish wave data
+        if array.size(bullish_change) >= 1000
+            array.shift(bullish_change)
+            array.shift(bullish_t)
+        highest_speed = bar_index - x1_ts > 0 ? ta.highest(speed_ts, bar_index - x1_ts) : speed_ts
+        array.unshift(bullish_change, highest_speed)
+        array.unshift(bullish_t, bar_index - x1_ts)
+        x1_ts := bar_index
+        y1_ts := bearsrc
+        pos_ts := -1
+        speed_ts := c_ts - o_ts
+    
+    speed_ts := speed_ts + c_ts - o_ts
+    float trendspeed_ts = ta.hma(speed_ts, 5)
+    speed_ts_global := speed_ts  // 更新全局变量
+    
+    // 更新全局变量以便在块外使用
+    trendspeed_ts_global := trendspeed_ts
+    dyn_ema_ts_global := dyn_ema_ts
+    colour_ts_global := ta.wma(close, 2) > dyn_ema_ts ? trendSpeedUpColor : trendSpeedDnColor
+
+// Plot Trend Speed 柱状图已移除，数据保留在 trendspeed_ts_global 中供策略使用
+
+// Plot Dynamic Trend (overlay) - 保留 Dynamic Trend 曲线
+plot(enableTrendSpeed ? dyn_ema_ts_global : na, color=colour_ts_global, linewidth=2, title="Dynamic Trend")
+
+// ========== QQE MOD 指标 ==========
+// === PRIMARY QQE SETTINGS ===
+group_qqe_primary = "Primary QQE Settings"
+qqe_rsiLengthPrimary = 6 // input.int(6, title="RSI Length", group=group_qqe_primary)
+qqe_rsiSmoothingPrimary = 5 // input.int(5, title="RSI Smoothing", group=group_qqe_primary)
+qqe_qqeFactorPrimary = 3.0 // input.float(3.0, title="QQE Factor", group=group_qqe_primary)
+qqe_thresholdPrimary = 3.0 // input.float(3.0, title="Threshold", group=group_qqe_primary)
+qqe_sourcePrimary = close // input.source(close, title="RSI Source", group=group_qqe_primary)
+
+// QQE MOD 开单阈值（绝对值），原来固定为 5 / 15
+qqe_entryThreshold1 = input.float(5.0, title="QQEMOD 开单阈值1 (|值|，默认5)", minval=0.0, step=0.5, group=group_qqe_primary)
+qqe_entryThreshold2 = input.float(15.0, title="QQEMOD 开单阈值2 (|值|，默认15)", minval=0.0, step=0.5, group=group_qqe_primary)
+
+// === SECONDARY QQE SETTINGS ===
+group_qqe_secondary = "Secondary QQE Settings"
+qqe_rsiLengthSecondary = 6 // input.int(6, title="RSI Length", group=group_qqe_secondary)
+qqe_rsiSmoothingSecondary = 5 // input.int(5, title="RSI Smoothing", group=group_qqe_secondary)
+qqe_qqeFactorSecondary = 1.61 // input.float(1.61, title="QQE Factor", group=group_qqe_secondary)
+qqe_thresholdSecondary = 3.0 // input.float(3.0, title="Threshold", group=group_qqe_secondary)
+qqe_sourceSecondary = close // input.source(close, title="RSI Source", group=group_qqe_secondary)
+
+// === BOLLINGER BANDS SETTINGS ===
+group_qqe_bollinger = "Bollinger Bands Settings"
+qqe_bollingerLength = 50 // input.int(50, minval=1, title="Length", group=group_qqe_bollinger, tooltip="The length of the Bollinger Bands calculation.")
+qqe_bollingerMultiplier = 0.35 // input.float(0.35, step=0.1, minval=0.001, maxval=5, title="Multiplier", group=group_qqe_bollinger, tooltip="The multiplier used to calculate Bollinger Band width.")
+
+// === QQE MOD 主计算 ===
+// Calculate Primary QQE
+qqe_primary_wildersLength = qqe_rsiLengthPrimary * 2 - 1
+qqe_primary_rsi = ta.rsi(qqe_sourcePrimary, qqe_rsiLengthPrimary)
+qqe_primary_smoothedRsi = ta.ema(qqe_primary_rsi, qqe_rsiSmoothingPrimary)
+qqe_primary_atrRsi = math.abs(qqe_primary_smoothedRsi[1] - qqe_primary_smoothedRsi)
+qqe_primary_smoothedAtrRsi = ta.ema(qqe_primary_atrRsi, qqe_primary_wildersLength)
+qqe_primary_dynamicAtrRsi = qqe_primary_smoothedAtrRsi * qqe_qqeFactorPrimary
+
+var float qqe_primary_longBand = 0.0
+var float qqe_primary_shortBand = 0.0
+var int qqe_primary_trendDirection = 0
+
+qqe_primary_atrDelta = qqe_primary_dynamicAtrRsi
+qqe_primary_newShortBand = qqe_primary_smoothedRsi + qqe_primary_atrDelta
+qqe_primary_newLongBand = qqe_primary_smoothedRsi - qqe_primary_atrDelta
+qqe_primary_longBand := qqe_primary_smoothedRsi[1] > qqe_primary_longBand[1] and qqe_primary_smoothedRsi > qqe_primary_longBand[1] ? math.max(qqe_primary_longBand[1], qqe_primary_newLongBand) : qqe_primary_newLongBand
+qqe_primary_shortBand := qqe_primary_smoothedRsi[1] < qqe_primary_shortBand[1] and qqe_primary_smoothedRsi < qqe_primary_shortBand[1] ? math.min(qqe_primary_shortBand[1], qqe_primary_newShortBand) : qqe_primary_newShortBand
+qqe_primary_longBandCross = ta.cross(qqe_primary_longBand[1], qqe_primary_smoothedRsi)
+
+if ta.cross(qqe_primary_smoothedRsi, qqe_primary_shortBand[1])
+    qqe_primary_trendDirection := 1
+else if qqe_primary_longBandCross
+    qqe_primary_trendDirection := -1
+else
+    qqe_primary_trendDirection := qqe_primary_trendDirection[1]
+
+primaryQQETrendLine = qqe_primary_trendDirection == 1 ? qqe_primary_longBand : qqe_primary_shortBand
+primaryRSI = qqe_primary_smoothedRsi
+
+// Calculate Secondary QQE
+qqe_secondary_wildersLength = qqe_rsiLengthSecondary * 2 - 1
+qqe_secondary_rsi = ta.rsi(qqe_sourceSecondary, qqe_rsiLengthSecondary)
+qqe_secondary_smoothedRsi = ta.ema(qqe_secondary_rsi, qqe_rsiSmoothingSecondary)
+qqe_secondary_atrRsi = math.abs(qqe_secondary_smoothedRsi[1] - qqe_secondary_smoothedRsi)
+qqe_secondary_smoothedAtrRsi = ta.ema(qqe_secondary_atrRsi, qqe_secondary_wildersLength)
+qqe_secondary_dynamicAtrRsi = qqe_secondary_smoothedAtrRsi * qqe_qqeFactorSecondary
+
+var float qqe_secondary_longBand = 0.0
+var float qqe_secondary_shortBand = 0.0
+var int qqe_secondary_trendDirection = 0
+
+qqe_secondary_atrDelta = qqe_secondary_dynamicAtrRsi
+qqe_secondary_newShortBand = qqe_secondary_smoothedRsi + qqe_secondary_atrDelta
+qqe_secondary_newLongBand = qqe_secondary_smoothedRsi - qqe_secondary_atrDelta
+qqe_secondary_longBand := qqe_secondary_smoothedRsi[1] > qqe_secondary_longBand[1] and qqe_secondary_smoothedRsi > qqe_secondary_longBand[1] ? math.max(qqe_secondary_longBand[1], qqe_secondary_newLongBand) : qqe_secondary_newLongBand
+qqe_secondary_shortBand := qqe_secondary_smoothedRsi[1] < qqe_secondary_shortBand[1] and qqe_secondary_smoothedRsi < qqe_secondary_shortBand[1] ? math.min(qqe_secondary_shortBand[1], qqe_secondary_newShortBand) : qqe_secondary_newShortBand
+qqe_secondary_longBandCross = ta.cross(qqe_secondary_longBand[1], qqe_secondary_smoothedRsi)
+
+if ta.cross(qqe_secondary_smoothedRsi, qqe_secondary_shortBand[1])
+    qqe_secondary_trendDirection := 1
+else if qqe_secondary_longBandCross
+    qqe_secondary_trendDirection := -1
+else
+    qqe_secondary_trendDirection := qqe_secondary_trendDirection[1]
+
+secondaryQQETrendLine = qqe_secondary_trendDirection == 1 ? qqe_secondary_longBand : qqe_secondary_shortBand
+secondaryRSI = qqe_secondary_smoothedRsi
+
+// Calculate Bollinger Bands for the Primary QQE Trend Line
+qqe_bollingerBasis = ta.sma(primaryQQETrendLine - 50, qqe_bollingerLength)
+qqe_bollingerDeviation = qqe_bollingerMultiplier * ta.stdev(primaryQQETrendLine - 50, qqe_bollingerLength)
+qqe_bollingerUpper = qqe_bollingerBasis + qqe_bollingerDeviation
+qqe_bollingerLower = qqe_bollingerBasis - qqe_bollingerDeviation
+
+// QQE MOD柱子值（secondaryRSI - 50）
+float qqeModBar = secondaryRSI - 50
+// QQE MOD颜色判断（绿色>threshold，红色<-threshold）
+bool qqeModGreen = qqeModBar > qqe_thresholdSecondary
+bool qqeModRed = qqeModBar < -qqe_thresholdSecondary
+
+// ==========================================================================================
+//                             SSL55 + Squeeze Box 入场方式 - 从 Box Scalper 策略集成
+// ==========================================================================================
+
+// === SSL55 + Squeeze Box 参数组 ===
+group_ssl55_squeeze = "SSL55 + Squeeze Box Entry"
+bool enableSSL55Squeeze = input.bool(false, title="启用 SSL55 + Squeeze Box 入场", group=group_ssl55_squeeze, tooltip="启用从 Box Scalper 策略集成的 SSL55 + Squeeze Box 开单逻辑")
+
+// === SSL55 参数 ===
+ssl55_Length = input.int(55, title='SSL55 Length', group=group_ssl55_squeeze, minval=1, step=10, tooltip="SSL55 计算周期，默认55")
+
+// === Squeeze Box 参数 ===
+squeeze_box_Period = input.int(24, title='Squeeze Box Periods', group=group_ssl55_squeeze, minval=1, step=1, tooltip="Squeeze Box 采样周期")
+squeeze_box_Deviation = input.int(2, title='Squeeze Box Deviation', group=group_ssl55_squeeze, minval=1, step=1, tooltip="Squeeze Box 标准差倍数")
+squeeze_box_Threshold = input.float(50, title='Squeeze Box Threshold(%)', group=group_ssl55_squeeze, minval=0, maxval=100, step=0.01, tooltip="Squeeze Box 挤压阈值百分比")
+squeeze_box_Source = input.source(hlc3, title='Squeeze Box Source', group=group_ssl55_squeeze, tooltip="Squeeze Box 数据源")
+
+// === SSL55 计算函数（使用 HMA，与 Box Scalper 一致）===
+ssl55_fn_ssl(int length) =>
+    hh = ta.hma(high, length)
+    ll = ta.hma(low, length)
+    var int Hlv_ssl55 = na
+    Hlv_ssl55 := close > hh ? 1 : close < ll ? -1 : Hlv_ssl55[1]
+    ssl55 = Hlv_ssl55 < 0 ? hh : ll
+    ssl55
+
+// === Squeeze Box MA 计算函数（仅使用 EMA）===
+squeeze_box_fn_get_ma(series float src, int per) =>
+    ta.ema(src, per)
+
+// === SSL55 + Squeeze Box 计算 ===
+var float ssl55_value = na
+var float squeeze_box_basis = na
+var float squeeze_box_bh = na
+var float squeeze_box_bl = na
+var bool ssl55_squeeze_long_signal = false
+var bool ssl55_squeeze_short_signal = false
+
+if enableSSL55Squeeze
+    // SSL55 计算
+    ssl55_value := ssl55_fn_ssl(ssl55_Length)
+    
+    // Squeeze Box 计算（使用 EMA）
+    squeeze_box_basis := squeeze_box_fn_get_ma(squeeze_box_Source, squeeze_box_Period)
+    squeeze_box_bu = squeeze_box_basis + ta.stdev(squeeze_box_Source, squeeze_box_Period)*squeeze_box_Deviation
+    squeeze_box_bd = squeeze_box_basis - ta.stdev(squeeze_box_Source, squeeze_box_Period)*squeeze_box_Deviation
+    squeeze_box_bw = (squeeze_box_bu - squeeze_box_bd)
+    squeeze_box_buh = ta.highest(squeeze_box_bu, squeeze_box_Period)
+    squeeze_box_bdl = ta.lowest(squeeze_box_bd, squeeze_box_Period)
+    squeeze_box_brng = squeeze_box_buh - squeeze_box_bdl
+    squeeze_box_sqp = squeeze_box_brng != 0 ? 100*squeeze_box_bw/squeeze_box_brng : 100
+    squeeze_box_sqz = squeeze_box_sqp < squeeze_box_Threshold
+    squeeze_box_boxh = squeeze_box_sqz ? ta.highest(squeeze_box_Source, squeeze_box_Period) : squeeze_box_Source
+    squeeze_box_boxl = squeeze_box_sqz ? ta.lowest(squeeze_box_Source, squeeze_box_Period) : squeeze_box_Source
+    
+    // 保持 Squeeze Box 的上下轨值
+    if squeeze_box_sqz
+        squeeze_box_bh := squeeze_box_boxh
+        squeeze_box_bl := squeeze_box_boxl
+    else
+        squeeze_box_bh := na(squeeze_box_bh[1]) ? ta.highest(squeeze_box_Source, squeeze_box_Period) : squeeze_box_bh[1]
+        squeeze_box_bl := na(squeeze_box_bl[1]) ? ta.lowest(squeeze_box_Source, squeeze_box_Period) : squeeze_box_bl[1]
+    
+    // 开单信号计算（参考 Box Scalper 策略）
+    // 多头：close > SSL55 and ta.crossover(close, BOX_bl)
+    ssl55_squeeze_long_signal := close > ssl55_value and ta.crossover(close, squeeze_box_bl)
+    // 空头：close < SSL55 and ta.crossunder(close, BOX_bh)
+    ssl55_squeeze_short_signal := close < ssl55_value and ta.crossunder(close, squeeze_box_bh)
+
+// === SSL55 + Squeeze Box 绘制（按照原策略样式）===
+// SSL55 绘制（按照原策略样式）- plot 必须在全局作用域
+ssl55_color = enableSSL55Squeeze ? (close > ssl55_value ? color.new(#00c3ff, 0) : close < ssl55_value ? color.new(#ff0062, 0) : na) : na
+plot(enableSSL55Squeeze ? ssl55_value : na, title='SSL55', linewidth=3, color=ssl55_color)
+
+// Squeeze Box 绘制（按照原策略样式）- plot 必须在全局作用域
+squeeze_box_color = enableSSL55Squeeze ? (close > squeeze_box_bh ? color.lime : close < squeeze_box_bl ? color.red : color.orange) : na
+plot(enableSSL55Squeeze ? squeeze_box_basis : na, color=color.rgb(120, 123, 134, 49), title="Squeeze Box Basis")
+squeeze_box_bhplot = plot(enableSSL55Squeeze ? squeeze_box_bh : na, color=color.new(squeeze_box_color, 50), title="Squeeze Box High Level")
+squeeze_box_blplot = plot(enableSSL55Squeeze ? squeeze_box_bl : na, color=color.new(squeeze_box_color, 50), title="Squeeze Box Low Level")
+fill(squeeze_box_bhplot, squeeze_box_blplot, color=color.new(squeeze_box_color, 87), title="Squeeze Box Fill")
+
+// ==========================================================================================
+//                             SSL55 + Squeeze Box 使用说明
+// ==========================================================================================
+// 
+// 以下变量可在交易逻辑中使用：
+//
+// 1. 基础值：
+//    - ssl55_value: float - SSL55 值（使用 HMA 计算，周期55）
+//    - squeeze_box_bh: float - Squeeze Box 上轨（阻力线）
+//    - squeeze_box_bl: float - Squeeze Box 下轨（支撑线）
+//
+// 2. 开单信号：
+//    - ssl55_squeeze_long_signal: bool - 多头开单信号
+//      条件：close > SSL55 and ta.crossover(close, BOX_bl)
+//    - ssl55_squeeze_short_signal: bool - 空头开单信号
+//      条件：close < SSL55 and ta.crossunder(close, BOX_bh)
+//
+// 3. 使用示例：
+//    
+//    if enableSSL55Squeeze and ssl55_squeeze_long_signal
+//        // 执行多头开单逻辑
+//        strategy.entry("LONG", strategy.long)
+//    
+//    if enableSSL55Squeeze and ssl55_squeeze_short_signal
+//        // 执行空头开单逻辑
+//        strategy.entry("SHORT", strategy.short)
+//
+// 4. 与其他指标组合使用（示例）：
+//    - 结合 ADX: ssl55_squeeze_long_signal and ADX > adx_threshold
+//    - 结合 SuperTrend: ssl55_squeeze_long_signal and trend == 1
+//    - 结合 QQE MOD: ssl55_squeeze_long_signal and qqeModGreen
+//
+// 注意：
+// - 所有变量都使用 ssl55_squeeze_ 或 squeeze_box_ 前缀，避免与现有代码冲突
+// - 默认关闭（enableSSL55Squeeze = false），需要手动启用
+// - SSL55 使用 HMA 计算，与原有 SSL（使用 WMA，周期200）不同
+//
+// ==========================================================================================
+
+// ========== Swing Length 参数（提前定义供前高点和前低点使用）==========
+swingLength = input.int(21, title="Swing Length", minval=1, group="Swing Patterns")
+
+// ========== 前高点和前低点计算 ==========
+pivotHighValue = ta.pivothigh(high, swingLength, swingLength)
+pivotLowValue = ta.pivotlow(low, swingLength, swingLength)
+var float preHigh = na  // 前高点
+var float preLow = na   // 前低点
+
+// 更新前高点
+if not na(pivotHighValue)
+    preHigh := pivotHighValue
+
+// 更新前低点
+if not na(pivotLowValue)
+    preLow := pivotLowValue
+
+// ==========================================================================================
+//                             STRUCTURES (BOS/CHoCH) - HELPER FUNCTIONS
+// ==========================================================================================
+
+// Helper to get line style from string input
+getLineStyle(string lineOption) =>
+    switch lineOption
+        "┈" => line.style_dotted
+        "╌" => line.style_dashed
+        => line.style_solid
+
+// Get structure highest bar
+get_structure_highest_bar(int lookback) =>
+	var int idx = 0
+    int maxBar1 = ta.highestbars(high, lookback)
+    int maxBar = bar_index > lookback ? maxBar1 : ta.highestbars(high, bar_index + 1)
+	for i = 0 to lookback - 1 by 1
+		if high[i+1] > high[i+2] and high[i] <= high[i+1] and ((i+1) * -1) >= maxBar
+			idx := (i+1) * -1
+	idx := idx == 0 ? maxBar : idx
+
+// Get structure lowest bar
+get_structure_lowest_bar(int lookback) =>
+	var int idx = 0
+    int minBar1 = ta.lowestbars(low, lookback)
+    int minBar = bar_index > lookback ? minBar1 : ta.lowestbars(low, bar_index + 1)
+	for i = 0 to lookback - 1 by 1
+		if low[i+1] < low[i+2] and low[i] >= low[i+1]  and ((i+1) * -1) >= minBar
+			idx := (i+1) * -1
+	idx := idx == 0 ? minBar : idx
+
+// ==========================================================================================
+//                             STRUCTURES (BOS/CHoCH) - INPUT PARAMETERS
+// ==========================================================================================
+
+// STRUCTURES (BOS/CHoCH) 参数
+bool is_enable_BosChoch_section = input.bool(true, title='Enable BOS/CHoCH Section', group=group_structures)
+bool isStructBodyCandleBreak = input.bool(true, title='Break with Candle\'s Body', group=group_structures)
+int structureLookback = input.int(10, title="Structure Lookback Period", minval=1, maxval=100, group=group_structures, tooltip="用于计算结构高低点的回看周期，默认10")
+// 其他参数已写死为默认值，不提供给用户修改
+bool is_enable_currentstruct_section = true
+
+color bullishBosColor = color.silver
+color bearishBosColor = color.silver
+string bosLineStyleOption = "───"
+int bosLineWidth = 1
+
+color bullishChochColor = color.yellow
+color bearishChochColor = color.yellow
+string chochLineStyleOption = "───"
+int chochLineWidth = 1
+
+color currentStructColor = color.blue
+string currentStructLineStyleOption = "───"
+int currentStructLineWidth = 1
+int structHistoryNbr = input.int(10, 'Number of Breaks to Show', minval=1, maxval=50, group=group_structures)
+
+// Get line styles
+bosLineStyle = getLineStyle(bosLineStyleOption)
+chochLineStyle = getLineStyle(chochLineStyleOption)
+currentStructLineStyle = getLineStyle(currentStructLineStyleOption)
+
+// ==========================================================================================
+//                             STRUCTURE FIBONACCI - INPUT PARAMETERS
+// ==========================================================================================
+
+bool is_enable_structfib_section = input.bool(false, title='Enable Structure Fibonacci Section', group=group_fibo, display=display.none)
+
+bool isFibo1ToShow = input.bool(true, title = "", group=group_fibo, inline = "Fibo1", display=display.none, active = is_enable_structfib_section)
+float fibo1Value = input.float(0.786, title = "", group=group_fibo, inline = "Fibo1", display=display.none, active = isFibo1ToShow and is_enable_structfib_section)
+color fibo1Color = input.color(#64b5f6, title = "", group=group_fibo, inline = "Fibo1", display=display.none, active = isFibo1ToShow and is_enable_structfib_section)
+string fibo1StyleOption = input.string("─", title = "", group=group_fibo, options=["─", "┈", "╌"], inline = "Fibo1", display=display.none, active = isFibo1ToShow and is_enable_structfib_section)
+int fibo1LineWidth = input.int(1, title = "", group=group_fibo, minval=1, maxval=5, inline = "Fibo1", display=display.none, active = isFibo1ToShow and is_enable_structfib_section)
+
+bool isFibo2ToShow = input.bool(true, title = "", group=group_fibo, inline = "Fibo2", display=display.none, active = is_enable_structfib_section)
+float fibo2Value = input.float(0.705, title = "", group=group_fibo, inline = "Fibo2", display=display.none, active = isFibo2ToShow and is_enable_structfib_section)
+color fibo2Color = input.color(#f23645, title = "", group=group_fibo, inline = "Fibo2", display=display.none, active = isFibo2ToShow and is_enable_structfib_section)
+string fibo2StyleOption = input.string("─", title = "", group=group_fibo, options=["─", "┈", "╌"], inline = "Fibo2", display=display.none, active = isFibo2ToShow and is_enable_structfib_section)
+int fibo2LineWidth = input.int(1, title = "", group=group_fibo, minval=1, maxval=5, inline = "Fibo2", display=display.none, active = isFibo2ToShow and is_enable_structfib_section)
+
+bool isFibo3ToShow = input.bool(true, title = "", group=group_fibo, inline = "Fibo3", display=display.none, active = is_enable_structfib_section)
+float fibo3Value = input.float(0.618, title = "", group=group_fibo, inline = "Fibo3", display=display.none, active = isFibo3ToShow and is_enable_structfib_section)
+color fibo3Color = input.color(#089981, title = "", group=group_fibo, inline = "Fibo3", display=display.none, active = isFibo3ToShow and is_enable_structfib_section)
+string fibo3StyleOption = input.string("─", title = "", group=group_fibo, options=["─", "┈", "╌"], inline = "Fibo3", display=display.none, active = isFibo3ToShow and is_enable_structfib_section)
+int fibo3LineWidth = input.int(1, title = "", group=group_fibo, minval=1, maxval=5, inline = "Fibo3", display=display.none, active = isFibo3ToShow and is_enable_structfib_section)
+
+bool isFibo4ToShow = input.bool(true, title = "", group=group_fibo, inline = "Fibo4", display=display.none, active = is_enable_structfib_section)
+float fibo4Value = input.float(0.5, title = "", group=group_fibo, inline = "Fibo4", display=display.none, active = isFibo4ToShow and is_enable_structfib_section)
+color fibo4Color = input.color(#4caf50, title = "", group=group_fibo, inline = "Fibo4", display=display.none, active = isFibo4ToShow and is_enable_structfib_section)
+string fibo4StyleOption = input.string("─", title = "", group=group_fibo, options=["─", "┈", "╌"], inline = "Fibo4", display=display.none, active = isFibo4ToShow and is_enable_structfib_section)
+int fibo4LineWidth = input.int(1, title = "", group=group_fibo, minval=1, maxval=5, inline = "Fibo4", display=display.none, active = isFibo4ToShow and is_enable_structfib_section)
+
+bool isFibo5ToShow = input.bool(true, title = "", group=group_fibo, inline = "Fibo5", display=display.none, active = is_enable_structfib_section)
+float fibo5Value = input.float(0.382, title = "", group=group_fibo, inline = "Fibo5", display=display.none, active = isFibo5ToShow and is_enable_structfib_section)
+color fibo5Color = input.color(#81c784, title = "", group=group_fibo, inline = "Fibo5", display=display.none, active = isFibo5ToShow and is_enable_structfib_section)
+string fibo5StyleOption = input.string("─", title = "", group=group_fibo, options=["─", "┈", "╌"], inline = "Fibo5", display=display.none, active = isFibo5ToShow and is_enable_structfib_section)
+int fibo5LineWidth = input.int(1, title = "", group=group_fibo, minval=1, maxval=5, inline = "Fibo5", display=display.none, active = isFibo5ToShow and is_enable_structfib_section)
+
+// ==========================================================================================
+//                             STRUCTURES (BOS/CHoCH) - GLOBAL VARIABLES
+// ==========================================================================================
+
+var array<line> structureLines = array.new<line>()
+var array<label> structureLabels = array.new<label>()
+
+var float structureHigh = 0.0
+var float structureLow = 0.0
+var int structureHighStartIndex = bar_index
+var int structureLowStartIndex = bar_index
+var int structureDirection = 0 // 0 = undefined, 1 = bearish, 2 = bullish
+var line structureHighLine = na
+var line structureLowLine = na
+var bool isBOSAlert = false
+var bool isCHOCHAlert = false
+var line fibo1Line = na
+var line fibo2Line = na
+var line fibo3Line = na
+var line fibo4Line = na
+var line fibo5Line = na
+var label fibo1Label = na
+var label fibo2Label = na
+var label fibo3Label = na
+var label fibo4Label = na
+var label fibo5Label = na
+var float structureRange = na
+var float fiboPrice = na
+var int fiboStartIndex = na
+
+// ==========================================================================================
+//                             STRUCTURES (BOS/CHoCH) - PROCESSING LOGIC
+// ==========================================================================================
+
+if is_enable_BosChoch_section
+    // Initialize value for bar 0
+    series float highestB10 = 0
+    series int highestBarB10 = 0
+    series float lowestB10 = 0
+    series int lowestBarB10 = 0
+    series float highestB10B = 0
+    series int highestBarB10B = 0
+    series float lowestB10B = 0
+    series int lowestBarB10B = 0
+    series float highest = 0
+    series int highestBar = 0
+    series float lowest = 0
+    series int lowestBar = 0
+
+    highestB10 := ta.highest(structureLookback)
+    highestBarB10 := ta.highestbars(high, structureLookback)
+    lowestB10 := ta.lowest(structureLookback)
+    lowestBarB10 := ta.lowestbars(low, structureLookback)
+    highestB10B := ta.highest(bar_index + 1)
+    highestBarB10B := ta.highestbars(high, bar_index + 1) 
+    lowestB10B := ta.lowest(bar_index + 1)
+    lowestBarB10B := ta.lowestbars(low, bar_index + 1)
+    
+    if(bar_index == 0)
+        structureHighStartIndex := bar_index
+        structureLowStartIndex  := bar_index
+        structureHigh := high
+        structureLow  := low 
+    else if (bar_index > structureLookback)
+        highest := highestB10
+        highestBar := highestBarB10
+        lowest := lowestB10
+        lowestBar := lowestBarB10
+    else
+        highest := highestB10B
+        highestBar := highestBarB10B
+        lowest := lowestB10B
+        lowestBar := lowestBarB10B
+
+    int structureMaxBar = bar_index + get_structure_highest_bar(structureLookback)
+    int structureMinBar = bar_index + get_structure_lowest_bar(structureLookback)
+    float lowStructBreakPrice = isStructBodyCandleBreak ? close : low
+    float highStructBreakPrice = isStructBodyCandleBreak ? close : high
+    bool isStuctureLowBroken = (lowStructBreakPrice < structureLow and lowStructBreakPrice[1] >= structureLow and lowStructBreakPrice[2] >= structureLow and lowStructBreakPrice[3] >= structureLow and bar_index[1] >  structureLowStartIndex and bar_index[2] >  structureLowStartIndex and bar_index[3] >  structureLowStartIndex) or (structureDirection == 2 and lowStructBreakPrice < structureLow)
+    bool isStructureHighBroken = (highStructBreakPrice > structureHigh and highStructBreakPrice[1] <= structureHigh and highStructBreakPrice[2] <= structureHigh and highStructBreakPrice[3] <= structureHigh and bar_index[1] >  structureHighStartIndex and bar_index[2] >  structureHighStartIndex and bar_index[3] >  structureHighStartIndex) or (structureDirection == 1 and highStructBreakPrice > structureHigh)
+    
+
+    if(isStuctureLowBroken)
+        // Check if structures to show is upper than user parameter
+        if(array.size(structureLines) >= structHistoryNbr)
+            line line_to_delete = array.get(structureLines, 0)
+            label label_to_delete = array.get(structureLabels, 0)
+            if not na(line_to_delete)
+                line_to_delete.delete()
+            if not na(label_to_delete)
+                label_to_delete.delete()
+            array.remove(structureLabels, 0)
+            array.remove(structureLines, 0)
+
+        // Create BOS line
+        if(structureDirection == 1)  
+            array.push(structureLines, line.new(structureLowStartIndex, structureLow, bar_index, structureLow, xloc=xloc.bar_index, extend=extend.none, color=bearishBosColor, style=bosLineStyle, width=bosLineWidth))
+            array.push(structureLabels, label.new((bar_index + structureLowStartIndex) / 2, structureLow, text="BOS", style=label.style_none, textcolor=bearishBosColor))
+            isBOSAlert := true
+
+        // Create CHoCH line
+        else
+            array.push(structureLines, line.new(structureLowStartIndex, structureLow, bar_index, structureLow, xloc=xloc.bar_index, extend=extend.none, color=bearishChochColor, style=chochLineStyle, width=chochLineWidth))
+            array.push(structureLabels, label.new((bar_index + structureLowStartIndex) / 2, structureLow, text="CHoCH", style=label.style_none, textcolor=bearishChochColor))
+            isCHOCHAlert := true
+
+        // Update values for new structure 
+        structureDirection := 1
+        structureHighStartIndex := structureMaxBar
+        structureLowStartIndex  := bar_index
+        structureHigh :=  high[bar_index - structureHighStartIndex] //highest
+        structureLow  := low
+
+    // Check for breakout
+    else if(isStructureHighBroken)
+        // Check if structures to show is upper than user parameter
+        if(array.size(structureLines) >= structHistoryNbr)
+            line line_to_delete = array.get(structureLines, 0)
+            label label_to_delete = array.get(structureLabels, 0)
+            if not na(line_to_delete)
+                line_to_delete.delete()
+            if not na(label_to_delete)
+                label_to_delete.delete()
+            array.remove(structureLabels, 0)
+            array.remove(structureLines, 0)
+
+        // Create BOS line
+        if(structureDirection == 2)  
+            array.push(structureLines, line.new(structureHighStartIndex, structureHigh, bar_index, structureHigh, xloc=xloc.bar_index, extend=extend.none, color=bullishBosColor, style=bosLineStyle, width=bosLineWidth))
+            array.push(structureLabels, label.new((bar_index + structureHighStartIndex) / 2, structureHigh, text="BOS", style=label.style_none, textcolor=bullishBosColor))
+            isBOSAlert := true
+
+        // Create CHoCH line
+        else
+            array.push(structureLines, line.new(structureHighStartIndex, structureHigh, bar_index, structureHigh, xloc=xloc.bar_index, extend=extend.none, color=bullishChochColor, style=chochLineStyle, width=chochLineWidth))
+            array.push(structureLabels, label.new((bar_index + structureHighStartIndex) / 2, structureHigh, text="CHoCH", style=label.style_none, textcolor=bullishChochColor))
+            isCHOCHAlert := true
+
+        // Update values for new structure
+        structureDirection := 2
+        structureHighStartIndex := bar_index 
+        structureLowStartIndex  := structureMinBar
+        structureHigh := high 
+        structureLow  := low[bar_index - structureLowStartIndex] //lowest
+    else
+        isBOSAlert := false
+        isCHOCHAlert := false
+        if(high > structureHigh and (structureDirection == 0 or structureDirection == 2))
+            if(not(isStructBodyCandleBreak) or not(isStructBodyCandleBreak and bar_index[1] > structureHighStartIndex and bar_index[2] >  structureHighStartIndex and bar_index[3] > structureHighStartIndex))
+                structureHigh := high
+                structureHighStartIndex := bar_index
+        else if(low < structureLow and (structureDirection == 0 or structureDirection == 1))
+            if(not(isStructBodyCandleBreak) or not(isStructBodyCandleBreak and bar_index[1] > structureLowStartIndex and bar_index[2] > structureLowStartIndex and bar_index[3] > structureLowStartIndex))
+                structureLow := low
+                structureLowStartIndex := bar_index
+
+// ==========================================================================================
+//                             STRUCTURES (BOS/CHoCH) - CURRENT STRUCTURE DRAWING
+// ==========================================================================================
+
+if is_enable_currentstruct_section
+    if not na(structureHighLine)
+        structureHighLine.delete()
+    if not na(structureLowLine)
+        structureLowLine.delete()
+
+    structureHighStartIndex := math.max(structureHighStartIndex, bar_index - 4600)
+    structureLowStartIndex := math.max(structureLowStartIndex, bar_index - 4600)
+    if (structureHighStartIndex >= 0 and structureHighStartIndex <= bar_index)
+        structureHighLine := line.new(structureHighStartIndex, structureHigh, bar_index, structureHigh, xloc.bar_index, color=currentStructColor, style = currentStructLineStyle, width = currentStructLineWidth)
+    if (structureLowStartIndex >= 0 and structureLowStartIndex <= bar_index)
+        structureLowLine := line.new(structureLowStartIndex, structureLow, bar_index, structureLow, xloc.bar_index, color=currentStructColor, style = currentStructLineStyle, width = currentStructLineWidth)
+
+    // Calculate structure range for Fibonacci
+    structureRange := math.abs(structureHigh - structureLow)
+
+    // ==========================================================================================
+    //                             STRUCTURE FIBONACCI - DRAWING LOGIC
+    // ==========================================================================================
+
+    if isFibo1ToShow and is_enable_structfib_section
+        if not na(fibo1Line)
+            fibo1Line.delete()
+        if not na(fibo1Label)
+            fibo1Label.delete()
+        // Calculate Fibonacci price based on structure direction
+        fiboPrice := structureDirection != 1 ? structureLow + (structureRange - structureRange * fibo1Value) : structureHigh - (structureRange - structureRange * fibo1Value)
+        fiboStartIndex := structureDirection != 1 ? structureLowStartIndex : structureHighStartIndex
+        fibo1Line := line.new(fiboStartIndex, fiboPrice, bar_index, fiboPrice, xloc.bar_index, color=fibo1Color, style=getLineStyle(fibo1StyleOption), width=fibo1LineWidth)
+        fibo1Label := label.new(bar_index + 5, fiboPrice, text=str.tostring(fibo1Value) + "(" + str.tostring(fiboPrice, format.mintick) + ")", style=label.style_none, textcolor=fibo1Color, xloc=xloc.bar_index, textalign=text.align_right)
+    
+    if isFibo2ToShow and is_enable_structfib_section
+        if not na(fibo2Line)
+            fibo2Line.delete()
+        if not na(fibo2Label)
+            fibo2Label.delete()
+        fiboPrice := structureDirection != 1 ? structureLow + (structureRange - structureRange * fibo2Value) : structureHigh - (structureRange - structureRange * fibo2Value)
+        fiboStartIndex := structureDirection != 1 ? structureLowStartIndex : structureHighStartIndex
+        fibo2Line := line.new(fiboStartIndex, fiboPrice, bar_index, fiboPrice, xloc.bar_index, color=fibo2Color, style=getLineStyle(fibo2StyleOption), width=fibo2LineWidth)
+        fibo2Label := label.new(bar_index + 5, fiboPrice, text=str.tostring(fibo2Value) + "(" + str.tostring(fiboPrice, format.mintick) + ")", style=label.style_none, textcolor=fibo2Color, xloc=xloc.bar_index, textalign=text.align_right)
+    
+    if isFibo3ToShow and is_enable_structfib_section
+        if not na(fibo3Line)
+            fibo3Line.delete()
+        if not na(fibo3Label)
+            fibo3Label.delete()
+        fiboPrice := structureDirection != 1 ? structureLow + (structureRange - structureRange * fibo3Value) : structureHigh - (structureRange - structureRange * fibo3Value)
+        fiboStartIndex := structureDirection != 1 ? structureLowStartIndex : structureHighStartIndex
+        fibo3Line := line.new(fiboStartIndex, fiboPrice, bar_index, fiboPrice, xloc.bar_index, color=fibo3Color, style=getLineStyle(fibo3StyleOption), width=fibo3LineWidth)
+        fibo3Label := label.new(bar_index + 5, fiboPrice, text=str.tostring(fibo3Value) + "(" + str.tostring(fiboPrice, format.mintick) + ")", style=label.style_none, textcolor=fibo3Color, xloc=xloc.bar_index, textalign=text.align_right)
+    
+    if isFibo4ToShow and is_enable_structfib_section
+        if not na(fibo4Line)
+            fibo4Line.delete()
+        if not na(fibo4Label)
+            fibo4Label.delete()
+        fiboPrice := structureDirection != 1 ? structureLow + (structureRange - structureRange * fibo4Value) : structureHigh - (structureRange - structureRange * fibo4Value)
+        fiboStartIndex := structureDirection != 1 ? structureLowStartIndex : structureHighStartIndex
+        fibo4Line := line.new(fiboStartIndex, fiboPrice, bar_index, fiboPrice, xloc.bar_index, color=fibo4Color, style=getLineStyle(fibo4StyleOption), width=fibo4LineWidth)
+        fibo4Label := label.new(bar_index + 5, fiboPrice, text=str.tostring(fibo4Value) + "(" + str.tostring(fiboPrice, format.mintick) + ")", style=label.style_none, textcolor=fibo4Color, xloc=xloc.bar_index, textalign=text.align_right)
+    
+    if isFibo5ToShow and is_enable_structfib_section
+        if not na(fibo5Line)
+            fibo5Line.delete()
+        if not na(fibo5Label)
+            fibo5Label.delete()
+        fiboPrice := structureDirection != 1 ? structureLow + (structureRange - structureRange * fibo5Value) : structureHigh - (structureRange - structureRange * fibo5Value)
+        fiboStartIndex := structureDirection != 1 ? structureLowStartIndex : structureHighStartIndex
+        fibo5Line := line.new(fiboStartIndex, fiboPrice, bar_index, fiboPrice, xloc.bar_index, color=fibo5Color, style=getLineStyle(fibo5StyleOption), width=fibo5LineWidth)
+        fibo5Label := label.new(bar_index + 5, fiboPrice, text=str.tostring(fibo5Value) + "(" + str.tostring(fiboPrice, format.mintick) + ")", style=label.style_none, textcolor=fibo5Color, xloc=xloc.bar_index, textalign=text.align_right)
+
+// ==========================================================================================
+//                             FVG (FAIR VALUE GAP) - INPUT PARAMETERS
+// ==========================================================================================
+
+bool is_enable_fvg_section = input.bool(true, title='Enable FVGs Section', group=group_fvg, inline="fvg_main", display=display.none)
+
+// FVG Colors
+color bullishFvgColor = input.color(color.new(color.green, 90), 'Bullish Color', group=group_fvg, inline="fvg_colors", display=display.none, active=is_enable_fvg_section)
+color bearishFvgColor = input.color(color.new(color.red, 90), 'Bearish Color', group=group_fvg, inline="fvg_colors", display=display.none, active=is_enable_fvg_section)
+color mitigatedFvgColor = input.color(color.new(#8c8c8c, 90), 'Mitigated Color', group=group_fvg, inline="fvg_colors", display=display.none, active=is_enable_fvg_section)
+color fvg_border_color_bull = input.color(color.new(color.green, 100), 'Bullish Border', group=group_fvg, inline="fvg_border", display=display.none, active=is_enable_fvg_section)
+color fvg_border_color_bear = input.color(color.new(color.red, 100), 'Bearish Border', group=group_fvg, inline="fvg_border", display=display.none, active=is_enable_fvg_section)
+
+bool isMitigatedFvgToReduce = input.bool(true, title='Reduce Mitigated FVG Area', group=group_fvg, active=is_enable_fvg_section)
+string fvg_label_size = input.string(size.small, "FVGs Labels size", [size.tiny, size.small, size.normal, size.large, size.huge], group = group_fvg, display=display.none, active=is_enable_fvg_section)
+int fvgTFDistance = input.int(10, 'FVGs Timeframe Distance', minval=1, maxval=25, group=group_fvg, tooltip="Controls how many candles on the right side between a timeframe FVG and one higher timeframe FVG.", active=is_enable_fvg_section)
+bool ltf_hide = input.bool(true, "Hide FVG's lowers than enabled timeframes?", group=group_fvg, display=display.none, active=is_enable_fvg_section)
+bool isAddBarIndex = input.bool(false, "Show FVG BarIndex?", group=group_fvg, display=display.none, active=is_enable_fvg_section)
+int fvgHistoryNbr = input.int(8, 'Global Max Active FVGs per Timeframe', minval=1, maxval=50, group=group_fvg, tooltip="Sets the global upper limit for the number of active FVGs per timeframe. Each timeframe's Max FVGs (e.g., TF1 Max FVGs, TF2 Max FVGs) cannot exceed this value and will be capped at this limit if a higher number is entered.", active=is_enable_fvg_section)
+
+bool tf1_show = input.bool(true, "TF1", group = group_fvg, inline="tf1", display=display.none, active=is_enable_fvg_section)
+string tf1 = input.timeframe("15", "", group=group_fvg, inline="tf1", display=display.none, active=is_enable_fvg_section)
+string tf1_label = input.string("15", "", group=group_fvg, inline="tf1", display=display.none, active=is_enable_fvg_section)
+int tf1_fvg_limit = input.int(6, "TF1 Max FVGs", minval=1, maxval=50, group=group_fvg, inline="tf1", display=display.none, active=is_enable_fvg_section)
+
+bool tf2_show = input.bool(true, "TF2", group = group_fvg, inline="tf2", display=display.none, active=is_enable_fvg_section)
+string tf2 = input.timeframe("60", "", group=group_fvg, inline="tf2", display=display.none, active=is_enable_fvg_section)
+string tf2_label = input.string("1H", "", group=group_fvg, inline="tf2", display=display.none, active=is_enable_fvg_section)
+int tf2_fvg_limit = input.int(10, "TF2 Max FVGs", minval=1, maxval=50, group=group_fvg, inline="tf2", display=display.none, active=is_enable_fvg_section)
+
+bool tf3_show = input.bool(true, "TF3", group = group_fvg, inline="tf3", display=display.none, active=is_enable_fvg_section)
+string tf3 = input.timeframe("240", "", group=group_fvg, inline="tf3", display=display.none, active=is_enable_fvg_section)
+string tf3_label = input.string("4H", "", group=group_fvg, inline="tf3", display=display.none, active=is_enable_fvg_section)
+int tf3_fvg_limit = input.int(10, "TF3 Max FVGs", minval=1, maxval=50, group=group_fvg, inline="tf3", display=display.none, active=is_enable_fvg_section)
+
+bool tf4_show = input.bool(true, "TF4", group = group_fvg, inline="tf4", display=display.none, active=is_enable_fvg_section)
+string tf4 = input.timeframe("D", "", group=group_fvg, inline="tf4", display=display.none, active=is_enable_fvg_section)
+string tf4_label = input.string("1D", "", group=group_fvg, inline="tf4", display=display.none, active=is_enable_fvg_section)
+int tf4_fvg_limit = input.int(10, "TF4 Max FVGs", minval=1, maxval=50, group=group_fvg, inline="tf4", display=display.none, active=is_enable_fvg_section)
+
+bool tf5_show = input.bool(false, "TF5", group = group_fvg, inline="tf5", display=display.none, active=is_enable_fvg_section)
+string tf5 = input.timeframe("W", "", group=group_fvg, inline="tf5", display=display.none, active=is_enable_fvg_section)
+string tf5_label = input.string("1W", "", group=group_fvg, inline="tf5", display=display.none, active=is_enable_fvg_section)
+int tf5_fvg_limit = input.int(10, "TF5 Max FVGs", minval=1, maxval=50, group=group_fvg, inline="tf5", display=display.none, active=is_enable_fvg_section)
+
+bool tf6_show = input.bool(false, "TF6", group = group_fvg, inline="tf6", display=display.none, active=is_enable_fvg_section)
+string tf6 = input.timeframe("1M", "", group=group_fvg, inline="tf6", display=display.none, active=is_enable_fvg_section)
+string tf6_label = input.string("1M", "", group=group_fvg, inline="tf6", display=display.none, active=is_enable_fvg_section)
+int tf6_fvg_limit = input.int(10, "TF6 Max FVGs", minval=1, maxval=50, group=group_fvg, inline="tf6", display=display.none, active=is_enable_fvg_section)
+
+bool tf7_show = input.bool(false, "TF7", group = group_fvg, inline="tf7", display=display.none, active=is_enable_fvg_section)
+string tf7 = input.timeframe("6M", "", group=group_fvg, inline="tf7", display=display.none, active=is_enable_fvg_section)
+string tf7_label = input.string("6M", "", group=group_fvg, inline="tf7", display=display.none, active=is_enable_fvg_section)
+int tf7_fvg_limit = input.int(10, "TF7 Max FVGs", minval=1, maxval=50, group=group_fvg, inline="tf7", display=display.none, active=is_enable_fvg_section)
+
+bool tf8_show = input.bool(false, "TF8", group = group_fvg, inline="tf8", display=display.none, active=is_enable_fvg_section)
+string tf8 = input.timeframe("5", "", group=group_fvg, inline="tf8", display=display.none, active=is_enable_fvg_section)
+string tf8_label = input.string("5m", "", group=group_fvg, inline="tf8", display=display.none, active=is_enable_fvg_section)
+int tf8_fvg_limit = input.int(10, "TF8 Max FVGs", minval=1, maxval=50, group=group_fvg, inline="tf8", display=display.none, active=is_enable_fvg_section)
+
+// ==========================================================================================
+//                             FVG (FAIR VALUE GAP) - TYPE DEFINITIONS
+// ==========================================================================================
+
+type Helper
+    string name         = "Helper"
+
+type FVG
+    int tf_idx
+    string tf
+    string tf_label
+    int tf_num
+    box _box
+    bool _type
+    bool _isMitigated
+    bool _isDrawn
+    int left
+    float top
+    int right
+    float bottom
+    string extend=extend.none
+    string border_style=line.style_solid
+    int border_width=1
+    color bgcolor
+    color border_color
+    string _text
+    color text_color=color.white
+    string text_halign=text.align_right
+    string text_size
+
+// ==========================================================================================
+//                             FVG (FAIR VALUE GAP) - GLOBAL VARIABLES
+// ==========================================================================================
+
+Helper helper = Helper.new()
+
+method Validtimeframe(Helper helper, tf) =>
+    helper.name := tf
+    n1 = timeframe.in_seconds()
+    n2 = timeframe.in_seconds(tf)
+    n1 <= n2
+
+// Arrays variable
+var FVG[] fvgBox1 = array.new<FVG>()
+var FVG[] fvgBox2 = array.new<FVG>()
+var FVG[] fvgBox3 = array.new<FVG>()
+var FVG[] fvgBox4 = array.new<FVG>()
+var FVG[] fvgBox5 = array.new<FVG>()
+var FVG[] fvgBox6 = array.new<FVG>()
+var FVG[] fvgBox7 = array.new<FVG>()
+var FVG[] fvgBox8 = array.new<FVG>()
+
+getIsTFShow(int tf_idx) =>
+    k = switch tf_idx
+        0 => tf1_show
+        1 => tf2_show
+        2 => tf3_show
+        3 => tf4_show
+        4 => tf5_show
+        5 => tf6_show
+        6 => tf7_show
+        7 => tf8_show
+
+getTFLabel(int tf_idx) =>
+    k = switch tf_idx
+        0 => tf1_label
+        1 => tf2_label
+        2 => tf3_label
+        3 => tf4_label
+        4 => tf5_label
+        5 => tf6_label
+        6 => tf7_label
+        7 => tf8_label
+
+getTFMaxFVGs(int tf_idx) =>
+    k = switch tf_idx
+        0 => math.min(tf1_fvg_limit, fvgHistoryNbr)
+        1 => math.min(tf2_fvg_limit, fvgHistoryNbr)
+        2 => math.min(tf3_fvg_limit, fvgHistoryNbr)
+        3 => math.min(tf4_fvg_limit, fvgHistoryNbr)
+        4 => math.min(tf5_fvg_limit, fvgHistoryNbr)
+        5 => math.min(tf6_fvg_limit, fvgHistoryNbr)
+        6 => math.min(tf7_fvg_limit, fvgHistoryNbr)
+        7 => math.min(tf8_fvg_limit, fvgHistoryNbr)
+
+// ==========================================================================================
+//                             FVG (FAIR VALUE GAP) - CORE FUNCTIONS
+// ==========================================================================================
+
+findFVGs (int tf_idx, string tf, string tf_label, int tf_num, FVG[] fvgBox) =>
+    if (not ltf_hide or (ltf_hide and helper.Validtimeframe(tf)))
+        [htf_high1, htf_low1, htf_high3, htf_low3, htf_time2] = request.security(syminfo.tickerid, tf, [high[1], low[1], high[3], low[3], time[2]], lookahead = barmerge.lookahead_on)
+        isBullishFVG = htf_high3 < htf_low1
+        isBearishFVG = htf_low3 > htf_high1
+
+        // Bullish FVG process
+        if isBullishFVG
+            //find such FVG has already existed.
+            bool isDuplicated=false
+            for [ie, fvgE] in fvgBox
+                if (fvgE.top==htf_low1) and (fvgE.bottom==htf_high3)
+                    isDuplicated:=true
+
+            if not isDuplicated
+                // Add FVG into FVG's array
+                FVG fvg1 = FVG.new(tf_idx, tf, tf_label, tf_num, na, true, false, false, left=bar_index - 2, top=htf_low1, right=0, bottom=htf_high3, extend = extend.none, border_style=line.style_solid, border_width=1, bgcolor=bullishFvgColor, border_color=color.new(color.green, 100), _text=tf_label, text_color=color.white, text_halign=text.align_right, text_size = fvg_label_size)
+                fvgBox.push(fvg1)
+                log.warning("added a BullFVG."+str.tostring(tf_idx))
+
+                // Check if FVG to show is upper than user parameter
+                if(fvgBox.size() > getTFMaxFVGs(tf_idx))
+                    // Delete the FVG and its index from arrays
+                    log.info("deleting BullFVG:"+str.tostring(fvgBox.size())+","+str.tostring(box.all.size()))
+                    box b=fvgBox.get(0)._box
+                    if not na(b)
+                        box.delete(b)
+                    fvgBox.remove(0)
+
+        // Bearish FVG process
+        if isBearishFVG
+            //find such FVG has already existed.
+            bool isDuplicated=false
+            for [ie, fvgE] in fvgBox
+                if (fvgE.top==htf_low3) and (fvgE.bottom==htf_high1)
+                    isDuplicated:=true
+
+            if not isDuplicated
+                // Add FVG into FVG's array
+                FVG fvg1 = FVG.new(tf_idx, tf, tf_label, tf_num, na, false, false, false, left=bar_index - 2, top=htf_low3, right=0, bottom=htf_high1, extend = extend.none, border_style=line.style_solid, border_width=1, bgcolor=bearishFvgColor, border_color=color.new(color.red, 100), _text=tf_label, text_color=color.white, text_halign=text.align_right, text_size = fvg_label_size)
+                fvgBox.push(fvg1)
+                log.warning("added a BearFVG."+str.tostring(tf_idx))
+
+                // Check if FVG to show is upper than user parameter
+                if(fvgBox.size() > getTFMaxFVGs(tf_idx))
+                    // Delete the FVG and its index from arrays
+                    log.info("deleting BearFVG:"+str.tostring(fvgBox.size())+","+str.tostring(box.all.size()))
+                    box b=fvgBox.get(0)._box
+                    if not na(b)
+                        box.delete(b)
+                    fvgBox.remove(0)
+
+// Draw FVG
+FVGDraw () =>
+    for i1 = 0 to 7
+        if (getIsTFShow(i1))
+            FVG[] fvgBox = switch (i1)
+                0 => fvgBox1
+                1 => fvgBox2
+                2 => fvgBox3
+                3 => fvgBox4
+                4 => fvgBox5
+                5 => fvgBox6
+                6 => fvgBox7
+                7 => fvgBox8
+            // Loop into all values of the array
+            for [index, value] in fvgBox
+                if (not value._isDrawn)
+                    value._isDrawn:=true
+                    // Processing FVG
+                    value._box:=box.new(left=value.left, top=value.top, right=bar_index+value.tf_num*fvgTFDistance, bottom=value.bottom, extend = value.extend, border_style=value.border_style, border_width=value.border_width, bgcolor=value.bgcolor, border_color=value.border_color, text=value._text+(isAddBarIndex?str.tostring(bar_index):""), text_color=value.text_color, text_halign=value.text_halign, text_size = value.text_size)
+                    log.warning("added a box, bar,bardist:"+str.tostring(bar_index)+","+str.tostring(value.tf_num*fvgTFDistance))
+                
+                if(value._type)
+                    // Check if FVG has been totally mitigated
+                    if(low <= box.get_bottom(value._box))
+                        box.delete(value._box)
+                        fvgBox.remove(index)
+                        log.info("FVGDraw bullFVG removed.")
+                    else
+                        if(low < box.get_top((value._box)))
+                            box.set_bgcolor(value._box, mitigatedFvgColor)
+                           
+                            // Mitigated FVG Alert
+                            if(not(value._isMitigated))
+                                alert("FVG has been mitigated", alert.freq_once_per_bar)
+                                value._isMitigated:=true
+
+                            // Reduce FVG if needed
+                            if(isMitigatedFvgToReduce)
+                                box.set_text(value._box, value.tf_label+"X")
+                                box.set_text_formatting(value._box, text.format_italic)
+                                box.set_top(value._box, low)
+
+                        box.set_right(value._box, bar_index+ value.tf_num*fvgTFDistance)
+                // Processing bearish FVG
+                else
+                    // Check if FVG has been mitigated
+                    if(high >= box.get_top(value._box))
+                        box.delete(value._box)
+                        fvgBox.remove(index)
+                        log.info("FVGDraw bearFVG removed.")
+                    else
+                        if(high > box.get_bottom(value._box))
+                            box.set_bgcolor(value._box, mitigatedFvgColor)    
+
+                            // Mitigated FVG Alert
+                            if(not(value._isMitigated))
+                                alert("FVG has been mitigated", alert.freq_once_per_bar)
+                                value._isMitigated:=true
+
+                            // Reduce FVG if needed
+                            if(isMitigatedFvgToReduce)
+                                box.set_text(value._box, value.tf_label+"X")
+                                box.set_text_formatting(value._box, text.format_italic)
+                                box.set_bottom(value._box, high)
+
+                        box.set_right(value._box, bar_index+ value.tf_num*fvgTFDistance)
+
+// ==========================================================================================
+//                             FVG (FAIR VALUE GAP) - MAIN PROCESSING LOGIC
+// ==========================================================================================
+
+if is_enable_fvg_section
+    int tf_num=0
+    if tf8_show
+        findFVGs(7, tf8, tf8_label, tf_num, fvgBox8)
+        tf_num:=tf_num+1
+    if tf7_show
+        findFVGs(6, tf7, tf7_label, tf_num, fvgBox7)
+        tf_num:=tf_num+1
+    if tf6_show
+        findFVGs(5, tf6, tf6_label, tf_num, fvgBox6)
+        tf_num:=tf_num+1
+    if tf5_show
+        findFVGs(4, tf5, tf5_label, tf_num, fvgBox5)
+        tf_num:=tf_num+1
+    if tf4_show
+        findFVGs(3, tf4, tf4_label, tf_num, fvgBox4)
+        tf_num:=tf_num+1
+    if tf3_show
+        findFVGs(2, tf3, tf3_label, tf_num, fvgBox3)
+        tf_num:=tf_num+1
+    if tf2_show
+        findFVGs(1, tf2, tf2_label, tf_num, fvgBox2)
+        tf_num:=tf_num+1
+    if tf1_show
+        findFVGs(0, tf1, tf1_label, tf_num, fvgBox1)
+        tf_num:=tf_num+1
+    FVGDraw()
+
+// ========== 开仓逻辑 ==========
+var int buySignalBar = na // 记录看多信号的 K 线位置
+var int sellSignalBar = na // 记录看空信号的 K 线位置
+var float entryPrice = na
+var int entryBarIndex = na
+var float initialLongStopLoss = na  // 开仓时的初始止损位
+var float initialShortStopLoss = na  // 开仓时的初始止损位
+var float initialLongPositionSize = na  // 开仓时的初始仓位大小（用于首次指标止盈平仓50%）
+var float initialShortPositionSize = na  // 开仓时的初始仓位大小（用于首次指标止盈平仓50%）
+var int lastLongIndicatorTPBar = na  // 上次指标止盈平多仓的bar_index（用于冷却期）
+var int lastShortIndicatorTPBar = na  // 上次指标止盈平空仓的bar_index（用于冷却期）
+var int longIndicatorTPCount = 0  // 指标止盈计数（做多）
+var int shortIndicatorTPCount = 0  // 指标止盈计数（做空）
+
+// 开单所需变量
+maxSSL = math.max(sslUp, sslDown)
+minSSL = math.min(sslUp, sslDown)
+maxSSL2 = math.max(sslUp2, sslDown2)
+minSSL2 = math.min(sslUp2, sslDown2)
+section3PositionUp = false
+section3PositionDown = false
+// var float addQulityPrice = 0 // 可能需要,但是tradingview不支持
+
+// QQE MOD 拐头判断（参考VolumaticVIDYA策略）
+// qqeModBar值处理（避免na值）
+float qqeModBar0 = na(qqeModBar) ? 0.0 : qqeModBar
+float qqeModBar1 = na(qqeModBar[1]) ? 0.0 : qqeModBar[1]
+float qqeModBar2 = na(qqeModBar[2]) ? 0.0 : qqeModBar[2]
+
+// 做多条件：最近三根K线 qqe柱子是红色 and 拐头向上 and 最近三个qqe柱子的最小值 < -5
+// 最近三根K线都是红色
+bool qqe_threeBarsRed = qqeModRed and qqeModRed[1] and qqeModRed[2]
+// 最近三根K线拐头向上：qqeModBar[2] > qqeModBar[1] < qqeModBar[0]（先下降后上升）
+bool qqe_turnUp = qqeModBar2 > qqeModBar1 and qqeModBar1 < qqeModBar0
+// 最近三个qqe柱子的最小值 < -阈值1（原来固定 -5）
+bool qqe_minBelowTh1 = math.min(qqeModBar0, qqeModBar1, qqeModBar2) < -qqe_entryThreshold1
+// 做多QQE条件（QQEMOD入场）
+bool qqe_longCondition = qqe_threeBarsRed and qqe_turnUp and qqe_minBelowTh1
+
+// 最近三个qqe柱子的最小值 < -阈值2（原来固定 -15，用于SSL2入场）
+bool qqe_minBelowTh2 = math.min(qqeModBar0, qqeModBar1, qqeModBar2) < -qqe_entryThreshold2
+// 做多QQE条件（SSL2入场）
+bool qqe_longConditionSSL2 = qqe_threeBarsRed and qqe_turnUp and qqe_minBelowTh2
+
+// 做多QQE条件（TrendSpeed入场）：最小值 < 0
+bool qqe_minBelow0 = math.min(qqeModBar0, qqeModBar1, qqeModBar2) < 0.0
+bool qqe_longConditionTS = qqe_threeBarsRed and qqe_turnUp and qqe_minBelow0
+
+// 做空条件：最近三根K线 qqe柱子是绿色 and 拐头向下 and 最近三个qqe柱子的最大值 > 5
+// 最近三根K线都是绿色
+bool qqe_threeBarsGreen = qqeModGreen and qqeModGreen[1] and qqeModGreen[2]
+// 最近三根K线拐头向下：qqeModBar[2] < qqeModBar[1] > qqeModBar[0]（先上升后下降）
+bool qqe_turnDown = qqeModBar2 < qqeModBar1 and qqeModBar1 > qqeModBar0
+// 最近三个qqe柱子的最大值 > 阈值1（原来固定 5）
+bool qqe_maxAboveTh1 = math.max(qqeModBar0, qqeModBar1, qqeModBar2) > qqe_entryThreshold1
+// 做空QQE条件（QQEMOD入场）
+bool qqe_shortCondition = qqe_threeBarsGreen and qqe_turnDown and qqe_maxAboveTh1
+
+// 最近三个qqe柱子的最大值 > 阈值2（原来固定 15，用于SSL2入场）
+bool qqe_maxAboveTh2 = math.max(qqeModBar0, qqeModBar1, qqeModBar2) > qqe_entryThreshold2
+// 做空QQE条件（SSL2入场）
+bool qqe_shortConditionSSL2 = qqe_threeBarsGreen and qqe_turnDown and qqe_maxAboveTh2
+
+// 做空QQE条件（TrendSpeed入场）：最大值 > 0
+bool qqe_maxAbove0 = math.max(qqeModBar0, qqeModBar1, qqeModBar2) > 0.0
+bool qqe_shortConditionTS = qqe_threeBarsGreen and qqe_turnDown and qqe_maxAbove0
+
+// TrendSpeed dyn_ema 颜色判断（仅在启用时计算）
+bool trendSpeed_threeBarsRed = false
+bool trendSpeed_threeBarsGreen = false
+bool trendSpeed_currentGreen = false
+bool trendSpeed_currentRed = false
+if enableTrendSpeed
+    // dyn_ema线颜色判断：使用 ta.wma(close, 2) > dyn_ema_ts_global（与原指标一致：colour = ta.wma(close, 2) > dyn_ema ? up_col : dn_col）
+    bool dynEmaGreen_current = ta.wma(close, 2) > dyn_ema_ts_global
+    // 前三个bar为红色（dyn_ema线为红色，即 ta.wma(close, 2) <= dyn_ema）
+    trendSpeed_threeBarsRed = not dynEmaGreen_current[1] and not dynEmaGreen_current[2] and not dynEmaGreen_current[3]
+    // 当前柱子为绿色（dyn_ema线为绿色，即 ta.wma(close, 2) > dyn_ema）
+    trendSpeed_currentGreen = dynEmaGreen_current
+    // 前三个bar为绿色（dyn_ema线为绿色）
+    trendSpeed_threeBarsGreen = dynEmaGreen_current[1] and dynEmaGreen_current[2] and dynEmaGreen_current[3]
+    // 当前柱子为红色（dyn_ema线为红色）
+    trendSpeed_currentRed = not dynEmaGreen_current
+
+// 看多信号
+// section3Up1：SSL入场 - 所有条件都要满足（基于SSL通道）
+// SSL斜率条件：maxSSL相对于指定周期前的WMA值的上涨幅度 > sslRateUp
+float section3Up1_wma2 = math.max(sslDown[sslSlopeLookback], sslUp[sslSlopeLookback])
+float section3Up1_slopeValue = (maxSSL - section3Up1_wma2) / section3Up1_wma2
+bool section3Up1_sslSlope = section3Up1_slopeValue > sslRateUp
+bool section3Up1 = maxSSL > minSSL2 and trend == 1 and qqe_longCondition and close > maxSSL and minSSL > minSSL2 and maxSSL > maxSSL2 and math.min(low, low[1]) <= maxSSL and section3Up1_sslSlope
+
+// section3Up2：SSL2入场 - 所有条件都要满足（基于SSL2通道）
+// SSL2斜率条件：maxSSL2相对于指定周期前的WMA值的上涨幅度 > ssl2RateUp
+float section3Up2_wma2 = math.max(sslDown2[ssl2SlopeLookback], sslDown2[ssl2SlopeLookback])
+bool section3Up2_ssl2Slope = (maxSSL2 - section3Up2_wma2) / section3Up2_wma2 > ssl2RateUp
+bool section3Up2 = maxSSL > minSSL2 and trend == 1 and qqe_longConditionSSL2 and close > maxSSL2 and minSSL > minSSL2 and maxSSL > maxSSL2 and math.min(low, low[1]) <= maxSSL2 and section3Up2_ssl2Slope
+
+// section3Up3：ADX入场 - 所有条件都要满足
+// ADX 上穿 DIPlus 形成金叉 and ADX > ADX[1] > ADX[2]
+bool section3Up3_adxCross = ta.crossover(ADX, DIPlus)
+bool section3Up3_adxRising = ADX > ADX[1] and ADX[1] > ADX[2]
+// DIPlus > 20 and DIMinus < 20 and 20 < ADX < 40
+bool section3Up3_adxCondition = DIPlus > adx_threshold_low and DIMinus < adx_threshold_low and ADX > adx_threshold_low and ADX < adx_threshold_high
+// 最近10根K线不能有 close > upper_6
+bool section3Up3_noExtremeHigh = true
+for i = 0 to 9
+    if close[i] > upper_6[i]
+        section3Up3_noExtremeHigh := false
+        break
+bool section3Up3 = minSSL > maxSSL2 and trend == 1 and close > maxSSL2 and section3Up3_adxCross and section3Up3_adxRising and section3Up3_adxCondition and section3Up3_noExtremeHigh
+
+// section3Up4：SSL55 + Squeeze Box 入场 - 所有条件都要满足
+// 条件：close > SSL55 and ta.crossover(close, BOX_bl)
+bool section3Up4 = enableSSL55Squeeze and ssl55_squeeze_long_signal  and trend == 1 and close > minSSL2
+
+// 综合做多条件：section3Up = (section3Up1 or section3Up2 or section3Up3 or section3Up4)（斜率条件已包含在各自条件中）
+section3Up = section3Up1 or section3Up2 or section3Up3 or section3Up4
+buySignal = (section3Up)
+if buySignal
+    buySignalBar := bar_index // 记录看多信号的 K 线位置
+    if section3Up
+        section3PositionUp := true
+
+// 看空信号
+// section3Down1：SSL入场 - 所有条件都要满足（基于SSL通道）
+// SSL斜率条件：maxSSL相对于指定周期前的WMA值的下跌幅度 < sslRateDown
+float section3Down1_wma2 = math.max(smaHigh[sslSlopeLookback], smaLow[sslSlopeLookback])
+float section3Down1_slopeValue = (maxSSL - section3Down1_wma2) / section3Down1_wma2
+bool section3Down1_sslSlope = section3Down1_slopeValue < sslRateDown
+bool section3Down1 = minSSL < maxSSL2 and trend == -1 and qqe_shortCondition and close < minSSL and minSSL < minSSL2 and maxSSL < maxSSL2 and math.max(high, high[1]) >= minSSL and section3Down1_sslSlope
+
+// section3Down2：SSL2入场 - 所有条件都要满足（基于SSL2通道）
+// SSL2斜率条件：maxSSL2相对于指定周期前的WMA值的下跌幅度 < ssl2RateDown
+float section3Down2_wma2 = math.max(smaHigh2[ssl2SlopeLookback], smaLow2[ssl2SlopeLookback])
+bool section3Down2_ssl2Slope = (maxSSL2 - section3Down2_wma2) / section3Down2_wma2 < ssl2RateDown
+bool section3Down2 = minSSL < maxSSL2 and trend == -1 and qqe_shortConditionSSL2 and close < minSSL2 and minSSL < minSSL2 and maxSSL < maxSSL2 and math.max(high, high[1]) >= minSSL2 and section3Down2_ssl2Slope
+
+// section3Down3：ADX入场 - 所有条件都要满足
+// ADX， DIMinus 形成金叉 and ADX > ADX[1] > ADX[2]
+bool section3Down3_adxCross = ta.crossover(ADX, DIMinus)
+bool section3Down3_adxRising = ADX > ADX[1] and ADX[1] > ADX[2]
+// DIMinus > 20 and DIPlus < 20 and 20 < ADX < 40
+bool section3Down3_adxCondition = DIMinus > adx_threshold_low and DIPlus < adx_threshold_low and ADX > adx_threshold_low and ADX < adx_threshold_high
+// 最近10根K线不能有 close < lower_6
+bool section3Down3_noExtremeLow = true
+for i = 0 to 9
+    if close[i] < lower_6[i]
+        section3Down3_noExtremeLow := false
+        break
+bool section3Down3 = maxSSL < minSSL2 and trend == -1 and close < minSSL2 and section3Down3_adxCross and section3Down3_adxRising and section3Down3_adxCondition and section3Down3_noExtremeLow
+
+// section3Down4：SSL55 + Squeeze Box 入场 - 所有条件都要满足
+// 条件：close < SSL55 and ta.crossunder(close, BOX_bh)
+bool section3Down4 = enableSSL55Squeeze and ssl55_squeeze_short_signal and trend == -1 and close < maxSSL2
+
+// 综合做空条件：section3Down = (section3Down1 or section3Down2 or section3Down3 or section3Down4)（斜率条件已包含在各自条件中）
+section3Down = section3Down1 or section3Down2 or section3Down3 or section3Down4
+sellSignal = (section3Down)
+if sellSignal
+    sellSignalBar := bar_index // 记录看空信号的 K 线位置
+    if section3Down
+        section3PositionDown := true
+
+// 移动止损相关全局变量（需在首次使用前声明）
+var float longTrailStop = na
+var bool longTrailActive = false
+var float shortTrailStop = na
+var bool shortTrailActive = false
+
+// ========== 止盈止损参数（提前定义供开仓时使用）==========
+riskRewardRatio = input.float(3.0, title="固定止盈倍数", minval=0.1, step=0.1, tooltip="固定止盈的盈亏比，默认3.0（1:3）", group=group_risk)
+
+// ========== 止盈止损逻辑 ===========
+// maxSuper 和 minSuper 已在 SuperTrend 计算后定义
+
+// 只有在无仓位时才能开仓（使用实时仓位判断）
+if (strategy.position_size == 0)
+    // 开多仓条件
+    if (section3Up) //  and longCond
+        // 根据入场方式，写入不同的注释，方便在回测订单列表中区分
+        string longEntryComment = section3Up4 ? '多_SSL55_SQUEEZE' : (section3Up3 ? '多_ADX' : (section3Up2 ? '多_SSL2' : '多_SSL1'))
+        strategy.entry('buy', strategy.long, comment=longEntryComment)
+        // 使用 log 日志记录入场信息
+        if section3Up4
+            // SSL55 + Squeeze Box 入场日志
+            string ssl55SqueezeLongLogMsg = 'SSL55+Squeeze LONG entry - bar_index=' + str.tostring(bar_index) + ' | price=' + str.tostring(close) + ' | ssl55=' + str.tostring(ssl55_value) + ' | box_bl=' + str.tostring(squeeze_box_bl)
+            log.info(ssl55SqueezeLongLogMsg)
+        else if section3Up3
+            // ADX 入场日志
+            string adxLongLogMsg = 'adx=' + str.tostring(ADX) + ' | qqeModBar=' + str.tostring(qqeModBar)
+            log.info(adxLongLogMsg)
+        else
+            // SSL/SSL2 入场日志
+            string longLogMsg = 'LONG entry - ' + (section3Up2 ? 'SSL2' : 'SSL1') + ' | bar_index=' + str.tostring(bar_index) + ' | price=' + str.tostring(close)
+            log.info(longLogMsg)
+        buySignalBar := na // 开仓后移除看多信号
+        entryPrice := close
+        entryBarIndex := bar_index
+        // 保存开仓时的初始止损位
+        initialLongStopLoss := minSuper
+        initialLongPositionSize := na  // 重置，等待持仓逻辑中记录实际仓位大小
+        lastLongIndicatorTPBar := na  // 重置指标止盈冷却期
+        longIndicatorTPCount := 0  // 重置指标止盈计数
+        // 计算固定止盈位（用于绘制白色框）
+        float longTakeProfitForBox = entryPrice + (entryPrice - initialLongStopLoss) * riskRewardRatio
+        // 绘制白色框：上边框为固定止盈位，下边框为初始止损位，向后延申6根k线
+        if not na(initialLongStopLoss) and not na(longTakeProfitForBox)
+            box.new(entryBarIndex, longTakeProfitForBox, entryBarIndex + 6, initialLongStopLoss, border_color=color.new(color.white, 0), border_width=1, bgcolor=color.new(color.white, 90), extend=extend.none)
+        // 重置移动止损状态（多空共用）
+        longTrailActive := false
+        longTrailStop := na
+        shortTrailActive := false
+        shortTrailStop := na
+
+    // 开空仓条件
+    if (section3Down) //  and shortCond
+        // 根据入场方式，写入不同的注释，方便在回测订单列表中区分
+        string shortEntryComment = section3Down4 ? '空_SSL55_SQUEEZE' : (section3Down3 ? '空_ADX' : (section3Down2 ? '空_SSL2' : '空_SSL1'))
+        strategy.entry('sell', strategy.short, comment=shortEntryComment)
+        // 使用 log 日志记录入场信息
+        if section3Down4
+            // SSL55 + Squeeze Box 入场日志
+            string ssl55SqueezeShortLogMsg = 'SSL55+Squeeze SHORT entry - bar_index=' + str.tostring(bar_index) + ' | price=' + str.tostring(close) + ' | ssl55=' + str.tostring(ssl55_value) + ' | box_bh=' + str.tostring(squeeze_box_bh)
+            log.info(ssl55SqueezeShortLogMsg)
+        else if section3Down3
+            // ADX 入场日志
+            string adxShortLogMsg = 'adx=' + str.tostring(ADX) + ' | qqeModBar=' + str.tostring(qqeModBar)
+            log.info(adxShortLogMsg)
+        else
+            // SSL/SSL2 入场日志
+            string shortLogMsg = 'SHORT entry - ' + (section3Down2 ? 'SSL2' : 'SSL1') + ' | bar_index=' + str.tostring(bar_index) + ' | price=' + str.tostring(close)
+            log.info(shortLogMsg)
+        sellSignalBar := na // 开仓后移除看空信号
+        entryPrice := close
+        entryBarIndex := bar_index
+        // 保存开仓时的初始止损位
+        initialShortStopLoss := maxSuper
+        initialShortPositionSize := na  // 重置，等待持仓逻辑中记录实际仓位大小
+        lastShortIndicatorTPBar := na  // 重置指标止盈冷却期
+        shortIndicatorTPCount := 0  // 重置指标止盈计数
+        // 计算固定止盈位（用于绘制白色框）
+        float shortTakeProfitForBox = entryPrice - (initialShortStopLoss - entryPrice) * riskRewardRatio
+        // 绘制白色框：上边框为初始止损位，下边框为固定止盈位，向后延申6根k线
+        if not na(initialShortStopLoss) and not na(shortTakeProfitForBox)
+            box.new(entryBarIndex, initialShortStopLoss, entryBarIndex + 6, shortTakeProfitForBox, border_color=color.new(color.white, 0), border_width=1, bgcolor=color.new(color.white, 90), extend=extend.none)
+        // 重置移动止损状态（多空共用）
+        longTrailActive := false
+        longTrailStop := na
+        shortTrailActive := false
+        shortTrailStop := na
+
+// ========== 止盈止损参数 ==========
+enableTrailingStop = input.bool(false, title="启用移动止损", group=group_risk, tooltip="移动止损默认关闭，多空共用此开关")
+qqeTrailingThresholdLong = input.float(30.0, title="做多移动止损 QQE 柱子值阈值", minval=0.0, step=1.0, group=group_risk, tooltip="QQE柱子值 > 此值时触发移动止损，默认30")
+qqeTrailingThresholdShort = input.float(-30.0, title="做空移动止损 QQE 柱子值阈值", maxval=0.0, step=1.0, group=group_risk, tooltip="QQE柱子值 < 此值时触发移动止损，默认-30")
+enableSupertrendTakeProfit = input.bool(false, title="启用 SuperTrend 指标止盈", group=group_risk, tooltip="勾选后，价格触及 SuperTrend 上下轨时也会作为止盈条件")
+enableFibonacciTakeProfit = input.bool(false, title="启用 Fibonacci 指标止盈", group=group_risk, tooltip="勾选后，价格触及 Fibonacci 布林带上下轨时也会作为止盈条件")
+indicatorTPCountThreshold = input.int(3, title="指标止盈计数阈值", minval=1, step=1, group=group_risk, tooltip="指标止盈计数达到此值时全部平仓，默认3")
+indicatorTPPartialRatio = input.float(0.5, title="首次指标止盈平仓比例", minval=0.0, maxval=1.0, step=0.1, group=group_risk, tooltip="首次达到指标止盈时平仓的比例，默认0.5（50%）。如果配置为0，则不执行平仓逻辑，认为是关闭了分批止盈")
+priceTolerance = input.float(0.0005, title="价格容差", minval=0.0, step=0.0005, group=group_risk, tooltip="容差范围：[目标价格*(1-容差配置), 目标价格*(1+容差配置)]，默认0.0005。在容差范围内均可认为达到目标，不需要等待精确值")
+
+// ========== 止盈止损逻辑 ==========
+// maxSuper 和 minSuper 已在开仓逻辑之前定义
+
+// ========== 做多止损止盈逻辑 ==========
+if strategy.position_size > 0
+    // 记录初始仓位大小（如果还没有记录，在持仓的第一根K线记录）
+    if na(initialLongPositionSize)
+        initialLongPositionSize := strategy.position_size
+    
+    // 计算止损位：使用SuperTrend下轨为限价止损位（动态更新）
+    float longStopLoss = minSuper
+    
+    // 计算固定止盈位：1:3 盈亏比（可配置），使用开仓时的初始止损位
+    float longTakeProfit = entryPrice + (entryPrice - initialLongStopLoss) * riskRewardRatio
+    
+    // ===== 移动止损（做多）======
+    float effectiveLongStop = longStopLoss
+    if enableTrailingStop and not na(entryPrice)
+        // 触发条件：QQE柱子值 > 阈值时启动移动止损
+        bool trigger = qqeModBar > qqeTrailingThresholdLong
+        // 第一次触发：满足条件时移动一次止损位置到 max(原止损价, preLow)
+        // 原止损价 = 订单的当前限价止损价（longStopLoss，即当前SuperTrend下轨）
+        if not longTrailActive and trigger
+            longTrailActive := true
+            longTrailStop := math.max(longStopLoss, nz(preLow, longStopLoss))
+            effectiveLongStop := longTrailStop
+        // 已经启动后，使用移动后的止损价
+        else if longTrailActive
+            effectiveLongStop := longTrailStop
+        else
+            effectiveLongStop := longStopLoss
+    else
+        effectiveLongStop := longStopLoss
+    
+    // 止损条件：达到任何位置都可以止损
+    // close < 当前SuperTrend下轨立即平仓
+    bool longStopLossHit = close < effectiveLongStop or low < effectiveLongStop
+    
+    // 止盈条件：达到任何位置都可以止盈
+    // 1. 固定止盈 1:3（全部平仓）
+    bool longTakeProfit1 = close >= longTakeProfit or high >= longTakeProfit
+    // 2. 指标止盈：close > SuperTrend上轨（可选，计数机制，加上容差机制）
+    // 容差范围：[maxSuper*(1-容差配置), maxSuper*(1+容差配置)]
+    // 如果 close > maxSuper*(1-容差配置) or high > maxSuper*(1-容差配置)，认为达到目标
+    float maxSuperToleranceLower = maxSuper * (1 - priceTolerance)
+    bool longTakeProfit2 = enableSupertrendTakeProfit and (close > maxSuperToleranceLower or high > maxSuperToleranceLower)
+    // 3. 指标止盈：close > Fibonacci上轨（可选，计数机制，加上容差机制）
+    // 容差范围：[upper_7*(1-容差配置), upper_7*(1+容差配置)]
+    // 如果 close > upper_7*(1-容差配置) or high > upper_7*(1-容差配置)，认为达到目标
+    float upper7ToleranceLower = upper_7 * (1 - priceTolerance)
+    bool longTakeProfit3 = enableFibonacciTakeProfit and (close > upper7ToleranceLower or high > upper7ToleranceLower)
+    
+    // 止损条件：全部平仓
+    if longStopLossHit or longTakeProfit1
+        // 根据 close 和 entryPrice 的关系判断止盈/止损
+        string closeComment = close > entryPrice ? '止盈平多' : '止损平多'
+        strategy.close('buy', comment=closeComment)
+        // 平仓后重置移动止损状态
+        longTrailActive := false
+        longTrailStop := na
+        lastLongIndicatorTPBar := na  // 重置指标止盈冷却期
+        longIndicatorTPCount := 0  // 重置指标止盈计数
+        initialLongPositionSize := na
+        entryBarIndex := bar_index
+    
+    // 指标止盈：计数机制
+    // 检查是否在冷却期内（到达一次指标止盈位后5根K线内不再计数，超过5根K线再次到达的需要增加一次计数）
+    bool longIndicatorTPCooling = not na(lastLongIndicatorTPBar) and (bar_index - lastLongIndicatorTPBar) < 5
+    // 检查是否达到指标止盈条件
+    bool longIndicatorTPTriggered = (longTakeProfit2 or longTakeProfit3) and strategy.position_size > 0
+    
+    // 如果不在冷却期内且满足条件，增加计数
+    if longIndicatorTPTriggered and not longIndicatorTPCooling
+        longIndicatorTPCount := longIndicatorTPCount + 1
+        lastLongIndicatorTPBar := bar_index  // 记录本次指标止盈的bar_index
+        // 移动一次止损位置到 max(原止损价, preLow)
+        // 原止损价 = 订单的当前限价止损价（longStopLoss，即当前SuperTrend下轨）
+        if not longTrailActive
+            longTrailActive := true
+            longTrailStop := math.max(longStopLoss, nz(preLow, longStopLoss))
+            effectiveLongStop := longTrailStop
+        
+        // 首次达到指标止盈位置时，平仓初始仓位的指定比例（默认50%）
+        // 如果配置为0不执行平仓逻辑，认为是关闭了分批止盈
+        if longIndicatorTPCount == 1 and indicatorTPPartialRatio > 0
+            if not na(initialLongPositionSize)
+                float partialQty = math.abs(initialLongPositionSize) * indicatorTPPartialRatio
+                string longPartialLogMsg = '指标止盈平多' + str.tostring(indicatorTPPartialRatio * 100) + '% - partialQty=' + str.tostring(partialQty) + ' | initialLongPositionSize=' + str.tostring(initialLongPositionSize)
+                log.info(longPartialLogMsg)
+                strategy.close('buy', qty=partialQty, comment='指标止盈平多' + str.tostring(indicatorTPPartialRatio * 100) + '%')
+        // 指标止盈计数大于等于阈值（且不是第一次），立即全部平仓
+        else if longIndicatorTPCount >= indicatorTPCountThreshold
+            string closeComment = close > entryPrice ? '止盈平多' : '止损平多'
+            strategy.close('buy', comment=closeComment)
+            // 平仓后重置移动止损状态
+            longTrailActive := false
+            longTrailStop := na
+            lastLongIndicatorTPBar := na  // 重置指标止盈冷却期
+            longIndicatorTPCount := 0  // 重置指标止盈计数
+            initialLongPositionSize := na
+            entryBarIndex := bar_index
+    
+// ========== 做空止损止盈逻辑 ==========
+if strategy.position_size < 0
+    // 记录初始仓位大小（如果还没有记录，在持仓的第一根K线记录）
+    if na(initialShortPositionSize)
+        initialShortPositionSize := math.abs(strategy.position_size)
+    
+    // 计算止损位：使用当前SuperTrend上轨为限价止损位（动态更新）
+    float shortStopLoss = maxSuper
+    
+    // 计算固定止盈位：1:3 盈亏比（可配置），使用开仓时的初始止损位
+    float shortTakeProfit = entryPrice - (initialShortStopLoss - entryPrice) * riskRewardRatio
+    
+    // ===== 移动止损（做空）======
+    float effectiveShortStop = shortStopLoss
+    if enableTrailingStop and not na(entryPrice)
+        // 触发条件：QQE柱子值 < 阈值时启动移动止损
+        bool trigger = qqeModBar < qqeTrailingThresholdShort
+        // 第一次触发：满足条件时移动一次止损位置到 min(原止损价, preHigh)
+        // 原止损价 = 订单的当前限价止损价（shortStopLoss，即当前SuperTrend上轨）
+        if not shortTrailActive and trigger
+            shortTrailActive := true
+            shortTrailStop := math.min(shortStopLoss, nz(preHigh, shortStopLoss))
+            effectiveShortStop := shortTrailStop
+        // 已经启动后，使用移动后的止损价
+        else if shortTrailActive
+            effectiveShortStop := shortTrailStop
+        else
+            effectiveShortStop := shortStopLoss
+    else
+        effectiveShortStop := shortStopLoss
+    
+    // 止损条件：达到任何位置都可以止损
+    // close > 当前SuperTrend上轨立即平仓
+    bool shortStopLossHit = close > effectiveShortStop or high > effectiveShortStop
+    
+    // 止盈条件：达到任何位置都可以止盈
+    // 1. 固定止盈 1:3（全部平仓）
+    bool shortTakeProfit1 = close <= shortTakeProfit or low <= shortTakeProfit
+    // 2. 指标止盈：close < SuperTrend下轨（可选，计数机制，加上容差机制）
+    // 容差范围：[minSuper*(1-容差配置), minSuper*(1+容差配置)]
+    // 如果 close < minSuper*(1+容差配置) or low < minSuper*(1+容差配置)，认为达到目标
+    float minSuperToleranceUpper = minSuper * (1 + priceTolerance)
+    bool shortTakeProfit2 = enableSupertrendTakeProfit and (close < minSuperToleranceUpper or low < minSuperToleranceUpper)
+    // 3. 指标止盈：close < Fibonacci下轨（可选，计数机制，加上容差机制）
+    // 容差范围：[lower_7*(1-容差配置), lower_7*(1+容差配置)]
+    // 如果 close < lower_7*(1+容差配置) or low < lower_7*(1+容差配置)，认为达到目标
+    float lower7ToleranceUpper = lower_7 * (1 + priceTolerance)
+    bool shortTakeProfit3 = enableFibonacciTakeProfit and (close < lower7ToleranceUpper or low < lower7ToleranceUpper)
+    
+    // 止损条件：全部平仓
+    if shortStopLossHit or shortTakeProfit1
+        // 根据 close 和 entryPrice 的关系判断止盈/止损
+        string closeComment = close < entryPrice ? '止盈平空' : '止损平空'
+        strategy.close('sell', comment=closeComment)
+        // 平仓后重置移动止损状态
+        shortTrailActive := false
+        shortTrailStop := na
+        lastShortIndicatorTPBar := na  // 重置指标止盈冷却期
+        shortIndicatorTPCount := 0  // 重置指标止盈计数
+        initialShortPositionSize := na
+        entryBarIndex := bar_index
+    
+    // 指标止盈：计数机制
+    // 检查是否在冷却期内（到达一次指标止盈位后5根K线内不再计数，超过5根K线再次到达的需要增加一次计数）
+    bool shortIndicatorTPCooling = not na(lastShortIndicatorTPBar) and (bar_index - lastShortIndicatorTPBar) < 5
+    // 检查是否达到指标止盈条件
+    bool shortIndicatorTPTriggered = (shortTakeProfit2 or shortTakeProfit3) and strategy.position_size < 0
+    
+    // 如果不在冷却期内且满足条件，增加计数
+    if shortIndicatorTPTriggered and not shortIndicatorTPCooling
+        shortIndicatorTPCount := shortIndicatorTPCount + 1
+        lastShortIndicatorTPBar := bar_index  // 记录本次指标止盈的bar_index
+        // 移动一次止损位置到 min(原止损价, preHigh)
+        // 原止损价 = 订单的当前限价止损价（shortStopLoss，即当前SuperTrend上轨）
+        if not shortTrailActive
+            shortTrailActive := true
+            shortTrailStop := math.min(shortStopLoss, nz(preHigh, shortStopLoss))
+            effectiveShortStop := shortTrailStop
+        
+        // 首次达到指标止盈位置时，平仓初始仓位的指定比例（默认50%）
+        // 如果配置为0不执行平仓逻辑，认为是关闭了分批止盈
+        if shortIndicatorTPCount == 1 and indicatorTPPartialRatio > 0
+            if not na(initialShortPositionSize)
+                float partialQty = initialShortPositionSize * indicatorTPPartialRatio
+                string shortPartialLogMsg = '指标止盈平空' + str.tostring(indicatorTPPartialRatio * 100) + '% - partialQty=' + str.tostring(partialQty) + ' | initialShortPositionSize=' + str.tostring(initialShortPositionSize)
+                log.info(shortPartialLogMsg)
+                strategy.close('sell', qty=partialQty, comment='指标止盈平空' + str.tostring(indicatorTPPartialRatio * 100) + '%')
+        // 指标止盈计数大于等于阈值（且不是第一次），立即全部平仓
+        else if shortIndicatorTPCount >= indicatorTPCountThreshold
+            string closeComment = close < entryPrice ? '止盈平空' : '止损平空'
+            strategy.close('sell', comment=closeComment)
+            // 平仓后重置移动止损状态
+            shortTrailActive := false
+            shortTrailStop := na
+            lastShortIndicatorTPBar := na  // 重置指标止盈冷却期
+            shortIndicatorTPCount := 0  // 重置指标止盈计数
+            initialShortPositionSize := na
+            entryBarIndex := bar_index
+
+// ========== Swing Highs-Lows & Candle Patterns [LuxAlgo] ==========
+showSwingPatterns = input.bool(title='展示Swing Highs/Lows & Candle Patterns', defval = false, group="Swing Patterns")
+
+// swingLength 已在前面定义，这里不再重复定义
+
+//Style
+swinghCss = color.red // input.color(color.red, 'Swing High', group = 'Swing Patterns')
+swinglCss = color.teal // input.color(color.teal, 'Swing Low', group = 'Swing Patterns')
+
+//Descriptions
+hammer_desc = "The hammer candlestick pattern is formed of a short body with a long lower wick, and is found at the bottom of a downward trend.\n\nA hammer shows that although there were selling pressures during the day, ultimately a strong buying pressure drove the price back up."
+ihammer_desc = "The inverted hammer is a similar pattern than the hammer pattern. The only difference being that the upper wick is long, while the lower wick is short.\n\nIt indicates a buying pressure, followed by a selling pressure that was not strong enough to drive the market price down. The inverse hammer suggests that buyers will soon have control of the market."
+bulleng_desc = "The bullish engulfing pattern is formed of two candlesticks. The first candle is a short red body that is completely engulfed by a larger green candle\n\nThough the second day opens lower than the first, the bullish market pushes the price up, culminating in an obvious win for buyers"
+hanging_desc = "The hanging man is the bearish equivalent of a hammer; it has the same shape but forms at the end of an uptrend.\nIt indicates that there was a significant sell-off during the day, but that buyers were able to push the price up again. The large sell-off is often seen as an indication that the bulls are losing control of the market."
+shooting_desc = "The shooting star is the same shape as the inverted hammer, but is formed in an uptrend: it has a small lower body, and a long upper wick.\nUsually, the market will gap slightly higher on opening and rally to an intra-day high before closing at a price just above the open – like a star falling to the ground."
+beareng_desc = "A bearish engulfing pattern occurs at the end of an uptrend. The first candle has a small green body that is engulfed by a subsequent long red candle.\nIt signifies a peak or slowdown of price movement, and is a sign of an impending market downturn. The lower the second candle goes, the more significant the trend is likely to be."
+
+//Data
+var float swing_phy = na
+var float swing_ply = na
+var string swing_H = na  // 永久保留 Swing High 标签
+var string swing_L = na  // 永久保留 Swing Low 标签
+
+swing_o = open[swingLength]
+swing_h = high[swingLength]
+swing_l = low[swingLength]
+swing_c = close[swingLength]
+
+swing_d = math.abs(swing_c - swing_o)
+swing_ph = ta.pivothigh(swingLength, swingLength)
+swing_pl = ta.pivotlow(swingLength, swingLength)
+
+// 永久保留 SwingH 和 SwingL 值
+if not na(swing_ph)
+    swing_H := swing_ph > swing_phy ? 'HH' : 'LH'
+    swing_phy := swing_ph
+
+if not na(swing_pl)
+    swing_L := swing_pl < swing_ply ? 'LL' : 'HL'
+    swing_ply := swing_pl
+
+//Patterns
+swing_hammer_cond = not na(swing_pl) and math.min(swing_o, swing_c) - swing_l > swing_d and swing_h - math.max(swing_c, swing_o) < swing_d
+swing_ihammer_cond = not na(swing_pl) and swing_h - math.max(swing_o, swing_c) > swing_d and math.min(swing_c, swing_o) - swing_l < swing_d
+swing_bulleng_cond = swing_c > swing_o and swing_c[1] < swing_o[1] and swing_c > swing_o[1] and swing_o < swing_c[1]
+swing_hanging_cond = not na(swing_ph) and math.min(swing_c, swing_o) - swing_l > swing_d and swing_h - math.max(swing_o, swing_c) < swing_d
+swing_shooting_cond = not na(swing_ph) and swing_h - math.max(swing_o, swing_c) > swing_d and math.min(swing_c, swing_o) - swing_l < swing_d
+swing_beareng_cond = swing_c < swing_o and swing_c[1] > swing_o[1] and swing_c < swing_o[1] and swing_o > swing_c[1]  // Bearish Engulfing: current red candle engulfs previous green candle
+
+//Determine pattern
+string swing_pattern_title = swing_hammer_cond ? 'Hammer'
+  : swing_ihammer_cond ? 'Inverted Hammer'
+  : swing_bulleng_cond ? 'Bullish Engulfing'
+  : swing_hanging_cond ? 'Hanging Man'
+  : swing_shooting_cond ? 'Shooting Star'
+  : swing_beareng_cond ? 'Bearish Engulfing'
+  : 'None'
+
+string swing_pattern_desc = swing_hammer_cond ? hammer_desc
+  : swing_ihammer_cond ? ihammer_desc
+  : swing_bulleng_cond ? bulleng_desc
+  : swing_hanging_cond ? hanging_desc
+  : swing_shooting_cond ? shooting_desc
+  : swing_beareng_cond ? beareng_desc
+  : ''
+
+//Set labels
+if showSwingPatterns
+    if not na(swing_ph)
+        //Set label (使用已永久保留的 swing_H)
+        label.new(bar_index[swingLength], swing_ph
+          , swing_H + "\n" + swing_pattern_title
+          , color = color(na)
+          , style = label.style_label_down
+          , textcolor = swinghCss
+          , tooltip = swing_pattern_desc)
+    
+    else if not na(swing_pl)
+        //Set label (使用已永久保留的 swing_L)
+        label.new(bar_index[swingLength], swing_pl
+          , swing_L + "\n" + swing_pattern_title
+          , color = color(na)
+          , style = label.style_label_up
+          , textcolor = swinglCss
+          , tooltip = swing_pattern_desc)
+
+// ==========================================================================================
+//                             TRENDLINE BREAKOUTS WITH TARGETS
+//                             纯展示指标，不参与开单计算，代码已隔离
+// ==========================================================================================
+
+bool is_enable_trendline_section = input.bool(false, title='Enable Trendline Breakouts With Targets', group=group_trendline)
+
+// Trendline Breakouts helper functions (must be defined outside if block)
+trendline_ExtenSwitcher(ex) =>
+    switch ex
+        '  25' => 1
+        '  50' => 2
+        => 3
+
+trendline_WidthSwitcher(ex) =>
+    switch ex
+        '1' => 1
+        '2' => 2
+        => 3
+
+trendline_StyleSwitcher(style) =>
+    switch style
+        'Dashed' => line.style_dashed
+        'Dotted' => line.style_dotted
+        => line.style_solid
+
+// Trendline Breakouts helper functions (must be defined outside if block)
+trendline_volAdj(int len) =>
+    math.min(ta.atr(len) * 0.3, close * (0.3 / 100))[20] / 2
+
+trendline_Trendlines(float src, int timeIndex, bool dir, string extensions, int barTime, float zband, color lineCol1, bool tradeisON) =>
+    var int trendline_Start = 1
+    var int trendline_End = 0
+    var int trendline_TIME = 1
+    var float trendline_YEnd = 0.0
+    var float trendline_YStart = 0.0
+    var float trendline_Slope = 0.0
+    var line trendline_Line1 = na
+    var line trendline_Line2 = na
+    var line trendline_Line3 = na
+    
+    // Use var to maintain state and handle na values similar to fixnan (keep previous value if current is na)
+    var float trendline_SCR = na
+    trendline_SCR := na(src) ? nz(trendline_SCR[1], 0) : src
+    if ta.change(trendline_SCR) != 0
+        trendline_TIME := time[timeIndex]
+        trendline_YStart := trendline_SCR[1]
+        trendline_Start := trendline_TIME[1]
+        if (trendline_TIME - trendline_Start) != 0
+            trendline_Slope := (trendline_SCR - trendline_YStart) / (trendline_TIME - trendline_Start)
+        trendline_Slope
+    
+    int trendline_EXTime = trendline_ExtenSwitcher(extensions) * barTime * 25
+    trendline_End := trendline_TIME + trendline_EXTime
+    trendline_YEnd := trendline_SCR + trendline_EXTime * trendline_Slope
+    
+    if ta.change(trendline_SCR) != 0 and not tradeisON[1]
+        color trendline_LineCond = trendline_Slope * time < 0 ? dir ? na : color.rgb(11, 139, 7, 53) : dir ? color.rgb(212, 46, 0, 54) : na
+        if not na(trendline_LineCond)
+            trendline_Line1 := line.new(trendline_Start, trendline_YStart, trendline_End, trendline_YEnd, xloc.bar_time, extend.none, color=color.new(color.white, 50))
+            
+            trendline_Line2 := line.new(trendline_Start, trendline_YStart - (zband * 2), trendline_End, trendline_YEnd - (zband * 2), xloc.bar_time, extend.none, color=color.new(color.black, 50))
+            
+            trendline_Line3 := line.new(trendline_Start, trendline_YStart - (zband * 1), trendline_End, trendline_YEnd - (zband * 1), xloc.bar_time, extend.none, color=color.new(color.black, 50))
+            
+            linefill.new(trendline_Line3, trendline_Line2, color=lineCol1)
+            linefill.new(trendline_Line3, trendline_Line1, color=trendline_LineCond)
+    
+    [trendline_Start, trendline_YStart, trendline_Slope]
+
+if is_enable_trendline_section
+    bool trendline_ChartTime = time > chart.left_visible_bar_time and time < chart.right_visible_bar_time
+    int trendline_BarTIME = time - time[1]
+    var int trendline_UpdatedX = 0
+    var float trendline_UpdatedY = 0.0
+    var float trendline_UpdatedSLP = 0.0
+    var int trendline_UpdatedXLow = 0
+    var float trendline_UpdatedYLow = 0.0
+    var float trendline_UpdatedSLPLow = 0.0
+    
+    int trendline_Period = input.int(10, title='Period', group=group_trendline, inline="trendline_001")
+    bool trendline_Trendtype = input.string(title="Type", defval='Wicks', options=['Wicks', 'Body'], group=group_trendline, inline="trendline_001") == 'Wicks'
+    string trendline_Extensions = input.string(title='Extend', defval='  25', options=['  25', '  50', '  75'], group=group_trendline, inline="trendline_001")
+    
+    color trendline_LineCol1 = input.color(color.rgb(109, 111, 111, 19), "", group=group_trendline, inline="trendline_002")
+    
+    float trendline_Zband = trendline_volAdj(30)
+    
+    float trendline_PH = ta.pivothigh(trendline_Trendtype ? high : close > open ? close : open, trendline_Period, trendline_Period / 2)
+    float trendline_PL = ta.pivotlow(trendline_Trendtype ? low : close > open ? open : close, trendline_Period, trendline_Period / 2)
+    
+    [trendline_Xx, trendline_XZ, trendline_SLPXZ] = trendline_Trendlines(trendline_PH, trendline_Period / 2, false, trendline_Extensions, trendline_BarTIME, trendline_Zband, trendline_LineCol1, false)
+    [trendline_XxL, trendline_XZL, trendline_SLPXZL] = trendline_Trendlines(trendline_PL, trendline_Period / 2, true, trendline_Extensions, trendline_BarTIME, trendline_Zband, trendline_LineCol1, false)
+    
+    // Use fixnan-like behavior: keep previous value if current is na
+    var float trendline_PH_fixed = na
+    var float trendline_PL_fixed = na
+    trendline_PH_fixed := na(trendline_PH) ? nz(trendline_PH_fixed[1], 0) : trendline_PH
+    trendline_PL_fixed := na(trendline_PL) ? nz(trendline_PL_fixed[1], 0) : trendline_PL
+    
+    if ta.change(trendline_PH_fixed) != 0
+        trendline_UpdatedX := trendline_Xx
+        trendline_UpdatedY := trendline_XZ
+        trendline_UpdatedSLP := trendline_SLPXZ
+        trendline_UpdatedSLP
+    
+    if ta.change(trendline_PL_fixed) != 0
+        trendline_UpdatedXLow := trendline_XxL
+        trendline_UpdatedYLow := trendline_XZL
+        trendline_UpdatedSLPLow := trendline_SLPXZL
+        trendline_UpdatedSLPLow
