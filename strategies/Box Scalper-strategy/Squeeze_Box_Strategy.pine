@@ -1,0 +1,184 @@
+//@version=5
+strategy("Squeeze Box Strategy [DW]", overlay=true, default_qty_type=strategy.percent_of_equity, default_qty_value=100, initial_capital=10000, max_lines_count=500, max_labels_count=500)
+
+// ==================== Squeeze Box Indicator Logic ====================
+// Inputs
+src    = input.source(hlc3, "Source")
+per    = input.int(21, "Sampling Period", minval=1)
+matype = input.string("EMA", "MA Type", options=["EMA","SMA","HULLMA"])
+ndev   = input.float(2, "Number of Deviations for Squeeze Calculation", minval=1)
+sr     = input.float(50, "Relative Squeeze % Threshold", minval=0, maxval=100, step=0.01)
+
+// v2 HullMA semantics
+halfPer  = math.max(1, int(per / 2))
+sqrtPerR = math.max(1, int(math.round(math.sqrt(per))))
+
+// MAs
+ema_  = ta.ema(src, per)
+sma_  = ta.sma(src, per)
+hull_ = ta.wma(2.0 * ta.wma(src, halfPer) - ta.wma(src, per), sqrtPerR)
+
+ma = switch matype
+    "EMA"    => ema_
+    "SMA"    => sma_
+    "HULLMA" => hull_
+    => ema_
+
+// Bollinger Bands
+dev = ta.stdev(src, per) * ndev
+bu  = ma + dev
+bd  = ma - dev
+bw  = bu - bd
+
+// Squeeze %
+buh  = ta.highest(bu, per)
+bdl  = ta.lowest(bd, per)
+brng = buh - bdl
+sqp  = 100.0 * bw / brng
+
+// Squeeze condition
+sqz = (sqp < sr) ? true : false
+
+// Squeeze Box
+boxh = sqz ? ta.highest(src, per) : src
+boxl = sqz ? ta.lowest(src, per)  : src
+
+// v2 semantics: valuewhen(sqz, box?, 1)
+var float last_boxh = na
+var float prev_boxh = na
+var float last_boxl = na
+var float prev_boxl = na
+
+if sqz
+    prev_boxh := last_boxh
+    last_boxh := boxh
+    prev_boxl := last_boxl
+    last_boxl := boxl
+
+bh = prev_boxh
+bl = prev_boxl
+
+// Colors
+boxcolor = src > bh ? color.lime : src < bl ? color.red : color.orange
+macolor  = ma > ma[1] ? color.lime : ma < ma[1] ? color.red : color.orange
+
+barCol =
+     (src > bh and src > src[1]) ? color.lime   :
+     (src > bh and src < src[1]) ? color.green  :
+     (src < bl and src < src[1]) ? color.red    :
+     (src < bl and src > src[1]) ? color.maroon :
+     color.orange
+
+// Plots
+bhplot = plot(bh, color=boxcolor, title="Box High")
+blplot = plot(bl, color=boxcolor, title="Box Low")
+plot(ma, color=macolor, linewidth=2, title="MA")
+fill(bhplot, blplot, color=color.new(boxcolor, 70), title="Box Fill")
+barcolor(barCol, title="Bar Color")
+
+// ==================== Strategy Logic ====================
+// Strategy Inputs
+risk_reward_ratio = input.float(5.0, "Risk/Reward Ratio", minval=0.5)
+bars_to_move_stop = input.int(10, "Bars Before Moving Stop Loss", minval=1)
+
+// Track trade state
+var bool in_long_trade = false
+var bool in_short_trade = false
+var float long_entry_price = na
+var float short_entry_price = na
+var float long_initial_sl = na
+var float short_initial_sl = na
+var float long_tp = na
+var float short_tp = na
+var int bars_since_entry = 0
+
+// Previous bar values for crossover detection
+prev_close = close[1]
+prev_high = high[1]
+prev_low = low[1]
+
+// ==================== LONG LOGIC ====================
+// Entry: Close crosses above Box High
+long_entry_signal = close > bh and prev_close <= bh and not in_long_trade and not in_short_trade
+
+if long_entry_signal
+    long_entry_price := close
+    long_initial_sl := bl
+    // TP = Entry + (Entry - SL) * Risk/Reward Ratio
+    long_tp := long_entry_price + (long_entry_price - long_initial_sl) * risk_reward_ratio
+    in_long_trade := true
+    bars_since_entry := 0
+    strategy.entry("Long", strategy.long)
+
+// Long trade active
+if in_long_trade
+    bars_since_entry += 1
+    
+    // Exit conditions
+    // 1. Close < current box low => immediate exit
+    if close < bl
+        strategy.close("Long", comment="Exit: Close < Box Low")
+        in_long_trade := false
+    // 2. Hit take profit
+    else if close >= long_tp
+        strategy.exit("Long", "Long", limit=long_tp, comment="Exit: Take Profit")
+        in_long_trade := false
+    // 3. After bars_to_move_stop bars, use trailing stop
+    else if bars_since_entry > bars_to_move_stop
+        // Moving stop loss: use current box low as trailing stop
+        current_sl = bl
+        if current_sl > long_initial_sl
+            strategy.exit("Long", "Long", stop=current_sl, limit=long_tp, comment="Exit: Trailing Stop or TP")
+        else
+            strategy.exit("Long", "Long", stop=long_initial_sl, limit=long_tp, comment="Exit: Initial Stop or TP")
+    // 4. Initial stop loss (before moving stop starts)
+    else
+        strategy.exit("Long", "Long", stop=long_initial_sl, limit=long_tp, comment="Exit: Initial Stop or TP")
+
+// ==================== SHORT LOGIC ====================
+// Entry: Close crosses below Box Low
+short_entry_signal = close < bl and prev_close >= bl and not in_long_trade and not in_short_trade
+
+if short_entry_signal
+    short_entry_price := close
+    short_initial_sl := bh
+    // TP = Entry - (SL - Entry) * Risk/Reward Ratio
+    short_tp := short_entry_price - (short_initial_sl - short_entry_price) * risk_reward_ratio
+    in_short_trade := true
+    bars_since_entry := 0
+    strategy.entry("Short", strategy.short)
+
+// Short trade active
+if in_short_trade
+    bars_since_entry += 1
+    
+    // Exit conditions
+    // 1. Close > current box high => immediate exit
+    if close > bh
+        strategy.close("Short", comment="Exit: Close > Box High")
+        in_short_trade := false
+    // 2. Hit take profit
+    else if close <= short_tp
+        strategy.exit("Short", "Short", limit=short_tp, comment="Exit: Take Profit")
+        in_short_trade := false
+    // 3. After bars_to_move_stop bars, use trailing stop
+    else if bars_since_entry > bars_to_move_stop
+        // Moving stop loss: use current box high as trailing stop
+        current_sl = bh
+        if current_sl < short_initial_sl
+            strategy.exit("Short", "Short", stop=current_sl, limit=short_tp, comment="Exit: Trailing Stop or TP")
+        else
+            strategy.exit("Short", "Short", stop=short_initial_sl, limit=short_tp, comment="Exit: Initial Stop or TP")
+    // 4. Initial stop loss (before moving stop starts)
+    else
+        strategy.exit("Short", "Short", stop=short_initial_sl, limit=short_tp, comment="Exit: Initial Stop or TP")
+
+// ==================== Visualization ====================
+// Plot entry and exit levels
+plot(in_long_trade ? long_entry_price : na, "Long Entry", color.blue, linewidth=2, style=plot.style_linebr)
+plot(in_long_trade ? long_initial_sl : na, "Long SL", color.red, linewidth=1, style=plot.style_linebr)
+plot(in_long_trade ? long_tp : na, "Long TP", color.green, linewidth=1, style=plot.style_linebr)
+
+plot(in_short_trade ? short_entry_price : na, "Short Entry", color.fuchsia, linewidth=2, style=plot.style_linebr)
+plot(in_short_trade ? short_initial_sl : na, "Short SL", color.red, linewidth=1, style=plot.style_linebr)
+plot(in_short_trade ? short_tp : na, "Short TP", color.green, linewidth=1, style=plot.style_linebr)
