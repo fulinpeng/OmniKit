@@ -136,6 +136,92 @@ sslUp = Hlv < 0 ? smaLow : smaHigh     // maxSSL
 
 ---
 
+### 4.1. SSL55 - SSL通道（短周期版本，Squeeze Box入场用）
+
+**作用**：与标准SSL相同，用于识别短期趋势方向，与Squeeze Box结合进行快速入场
+
+**参数设置**：
+- `ssl55_Length`：SSL55计算周期，默认55
+- 使用HMA（Hull Moving Average）计算，计算方式与Box Scalper策略保持一致
+
+**计算逻辑**：
+```
+hh = HMA(high, 55)      // 高点HMA
+ll = HMA(low, 55)        // 低点HMA
+Hlv_ssl55：趋势方向标志（1=看涨，-1=看跌）
+ssl55 = Hlv_ssl55 < 0 ? hh : ll  // 上升趋势取ll，下降趋势取hh
+```
+
+**应用**：
+- 作为`section3Up4`和`section3Down4`的趋势确认条件
+- 与Squeeze Box上下轨结合判断价格位置关系
+
+**可视化**：
+- **颜色**：动态变化
+  - `close > ssl55_value`：青色（#00c3ff，宽度3）
+  - `close < ssl55_value`：粉红色（#ff0062，宽度3）
+
+---
+
+### 4.2. Squeeze Box - 挤压盒指标
+
+**作用**：识别价格挤压区域，用于快速突破入场信号
+
+**参数设置**：
+- `squeeze_box_Period`：采样周期，默认24
+- `squeeze_box_Deviation`：标准差倍数，默认2
+- `squeeze_box_Threshold`：挤压阈值百分比，默认50%
+- `squeeze_box_Source`：数据源，默认`hlc3`
+
+**计算逻辑**：
+```
+基础：
+- basis = EMA(source, period)
+- dev = stdev(source, period) × deviation
+- upper_band = basis + dev
+- lower_band = basis - dev
+- bandwidth = upper_band - lower_band
+
+挤压百分比计算：
+- buh = highest(upper_band, period)
+- bdl = lowest(lower_band, period)
+- range = buh - bdl
+- sqp = 100 × bandwidth / range
+
+挤压判断：
+- sqz = sqp < threshold（当前带宽百分比 < 阈值）
+
+Box High/Low（K线突破点）：
+- box_high = sqz ? highest(source, period) : source
+- box_low = sqz ? lowest(source, period) : source
+```
+
+**信号生成**：
+- **多头信号**：`close > ssl55_value AND crossover(close, box_low)`
+  - 价格在SSL55上方且向上突破Squeeze Box下轨
+  - 用于`section3Up4`的开仓条件
+  
+- **空头信号**：`close < ssl55_value AND crossunder(close, box_high)`
+  - 价格在SSL55下方且向下突破Squeeze Box上轨
+  - 用于`section3Down4`的开仓条件
+
+**可视化**：
+- **基础线**（basis）：灰色（透明度49%）
+- **上轨（Box High）**：根据价格位置动态变色
+  - `close > box_high`：绿色（lime）
+  - `close < box_low`：红色（red）
+  - 其他：橙色（orange）
+  - 透明度50%
+- **下轨（Box Low）**：同上轨颜色
+- **填充区域**：与上下轨同色，透明度87%
+
+**应用**：
+- 作为`section3Up4`和`section3Down4`的核心入场确认
+- 识别价格突破挤压区域的快速入场机会
+- 与超级趋势（trend）和长期SSL2结合使用
+
+---
+
 ### 4.1. SSL3 - SSL通道（超长周期版本）
 
 **作用**：识别超长期趋势方向
@@ -484,6 +570,13 @@ lower_7 = fbb_basis - 1.414 * fbb_dev
     - DIPlus > 20 and DIMinus < 20 and 20 < ADX < 40 (20 40可配置)
     - 最近10根k线不能有 close > upper_6
 
+**section3Up4**：
+- 满足所有条件可以SSL55 + Squeeze Box入场
+    - `enableSSL55Squeeze == true`（需要启用SSL55 + Squeeze Box功能）
+    - `ssl55_squeeze_long_signal == true`（K线上穿Squeeze Box下轨 且 close > SSL55）
+    - `trend == 1`（上升趋势确认）
+    - `close > minSSL2`（收盘价在minSSL2上方）
+
 **开仓条件**：
 - 当前无持仓（`not isHoldingPosition`）
 - `section3Up = true`
@@ -555,6 +648,13 @@ lower_7 = fbb_basis - 1.414 * fbb_dev
     - ADX， DIMinus 形成金叉 and ADX > ADX[1] > ADX[2]
     - DIMinus > 20 and DIPlus < 20 and 20 < ADX < 40 (20 40可配置)
     - 最近10根k线不能有 close < lower_6
+
+**section3Down4**：
+- 满足所有条件可以SSL55 + Squeeze Box入场
+    - `enableSSL55Squeeze == true`（需要启用SSL55 + Squeeze Box功能）
+    - `ssl55_squeeze_short_signal == true`（K线下穿Squeeze Box上轨 且 close < SSL55）
+    - `trend == -1`（下降趋势确认）
+    - `close < maxSSL2`（收盘价在maxSSL2下方）
 
 **开仓条件**：
 - 当前无持仓（`not isHoldingPosition`）
