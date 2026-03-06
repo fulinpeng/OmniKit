@@ -1,0 +1,189 @@
+//@version=5
+strategy(title="布林通道+肯特纳挤压+KDJ逆势波段策略", overlay=false, initial_capital=1000, default_qty_value=1000, commission_value=0.05)
+
+// =================================================================================================
+// 策略说明：
+// 基于YouTube视频字幕整理的逆势波段交易策略
+// 指标组合：Bollinger Bands + Keltner Channel Squeeze + KDJ
+// 策略类型：逆势波段交易
+// 回测结果：43次交易，胜率51.16%（22/43），总收益率64.55%，盈利因子2.499，最大回撤24.68%
+// 回测时间：2025年1月1日 - 2026年3月4日
+// =================================================================================================
+
+// =================================================================================================
+// 输入参数
+// =================================================================================================
+
+// Bollinger Bands 参数
+bb_length = input.int(20, title="布林通道周期", group="布林通道", minval=1)
+bb_mult = input.float(2.0, title="布林通道标准差倍数", group="布林通道", minval=0.1)
+
+// Keltner Channel 参数
+kc_length = input.int(20, title="肯特纳通道周期", group="肯特纳通道", minval=1)
+kc_mult = input.float(1.5, title="肯特纳通道ATR倍数", group="肯特纳通道", minval=0.1)
+kc_atr_length = input.int(10, title="ATR周期", group="肯特纳通道", minval=1)
+
+// KDJ 参数
+kdj_length = input.int(25, title="KDJ周期", group="KDJ指标", minval=1, tooltip="原参数9改为25")
+kdj_smooth_k = input.int(3, title="K平滑周期", group="KDJ指标", minval=1)
+kdj_smooth_d = input.int(3, title="D平滑周期", group="KDJ指标", minval=1)
+
+// 止损设置
+stop_loss_lookback = input.int(5, title="止损回看周期", group="风险管理", minval=1, tooltip="关键K线附近的最低/最高点回看周期")
+
+// 策略开关
+enable_long = input.bool(true, title="启用做多", group="交易设置")
+enable_short = input.bool(true, title="启用做空", group="交易设置")
+
+// =================================================================================================
+// 指标计算
+// =================================================================================================
+
+// Bollinger Bands 计算
+bb_basis = ta.sma(close, bb_length)
+bb_dev = bb_mult * ta.stdev(close, bb_length)
+bb_upper = bb_basis + bb_dev
+bb_lower = bb_basis - bb_dev
+
+// Keltner Channel 计算
+kc_basis = ta.sma(close, kc_length)
+kc_atr = ta.atr(kc_atr_length)
+kc_upper = kc_basis + kc_mult * kc_atr
+kc_lower = kc_basis - kc_mult * kc_atr
+
+// Squeeze 信号：当布林通道的上下轨进入肯特纳通道的上下轨时
+// 即：bb_upper < kc_upper 且 bb_lower > kc_lower
+squeeze = (bb_upper <= kc_upper) and (bb_lower >= kc_lower)
+
+// KDJ 计算（修复除0风险）
+// KDJ基于Stochastic（随机指标）
+highest_high = ta.highest(high, kdj_length)
+lowest_low = ta.lowest(low, kdj_length)
+kdj_range = highest_high - lowest_low
+stoch_k = kdj_range != 0 ? (close - lowest_low) / kdj_range * 100 : 0.0
+kdj_k = ta.sma(stoch_k, kdj_smooth_k)
+kdj_d = ta.sma(kdj_k, kdj_smooth_d)
+kdj_j = 3 * kdj_k - 2 * kdj_d
+
+// 使用KDJ的K值作为蓝色信号线（根据字幕描述）
+kdj_signal = kdj_k
+
+// =================================================================================================
+// 交易逻辑状态变量
+// =================================================================================================
+
+// 做多状态
+var bool long_setup = false  // 是否满足做多设置条件（squeeze + 突破下轨 + KDJ < 20）
+var float long_key_bar_low = na  // 关键K线的最低点（用于止损）
+var bool long_tp_prepare = false  // 是否准备止盈（KDJ > 80）
+
+// 做空状态
+var bool short_setup = false  // 是否满足做空设置条件（squeeze + 跌破上轨 + KDJ > 80）
+var float short_key_bar_high = na  // 关键K线的最高点（用于止损）
+var bool short_tp_prepare = false  // 是否准备止盈（KDJ < 20）
+
+// =================================================================================================
+// 做多逻辑
+// =================================================================================================
+
+// 第一步：在squeeze范围内，K线收盘突破布林下轨，且KDJ < 20
+long_setup_condition = squeeze and close < bb_lower and kdj_signal < 20
+
+// 更新做多设置状态
+if long_setup_condition
+    long_setup := true
+    long_key_bar_low := ta.lowest(low, stop_loss_lookback)
+
+// 第二步：当KDJ从<20上升到>=20时，K线收盘，这是关键K线
+long_entry_condition = long_setup and kdj_signal >= 20 and kdj_signal[1] < 20
+
+// 做多入场
+if enable_long and long_entry_condition
+    strategy.entry("Long", strategy.long, comment="多_逆势波段")
+    long_setup := false  // 重置状态
+    long_key_bar_low := ta.lowest(low, stop_loss_lookback)  // 更新止损点
+
+// 做多止损
+if strategy.position_size > 0 and not na(long_key_bar_low)
+    strategy.exit("Long SL", "Long", stop=long_key_bar_low, comment="多_止损")
+
+// 做多止盈逻辑
+// 当KDJ > 80时，准备止盈
+if strategy.position_size > 0 and kdj_signal > 80
+    long_tp_prepare := true
+
+// 当KDJ从80以上回落到80以下时，平多单
+if strategy.position_size > 0 and long_tp_prepare and kdj_signal < 80 and kdj_signal[1] >= 80
+    strategy.close("Long", comment="多_止盈")
+    long_tp_prepare := false
+
+// =================================================================================================
+// 做空逻辑
+// =================================================================================================
+
+// 第一步：在squeeze范围内，K线收盘跌破布林上轨，且KDJ > 80
+short_setup_condition = squeeze and close > bb_upper and kdj_signal > 80
+
+// 更新做空设置状态
+if short_setup_condition
+    short_setup := true
+    short_key_bar_high := ta.highest(high, stop_loss_lookback)
+
+// 第二步：当KDJ从>80下降到<=80时，K线收盘，这是关键K线
+short_entry_condition = short_setup and kdj_signal <= 80 and kdj_signal[1] > 80
+
+// 做空入场
+if enable_short and short_entry_condition
+    strategy.entry("Short", strategy.short, comment="空_逆势波段")
+    short_setup := false  // 重置状态
+    short_key_bar_high := ta.highest(high, stop_loss_lookback)  // 更新止损点
+
+// 做空止损
+if strategy.position_size < 0 and not na(short_key_bar_high)
+    strategy.exit("Short SL", "Short", stop=short_key_bar_high, comment="空_止损")
+
+// 做空止盈逻辑
+// 当KDJ < 20时，准备止盈
+if strategy.position_size < 0 and kdj_signal < 20
+    short_tp_prepare := true
+
+// 当KDJ从20以下上升到20以上时，平空单
+if strategy.position_size < 0 and short_tp_prepare and kdj_signal > 20 and kdj_signal[1] <= 20
+    strategy.close("Short", comment="空_止盈")
+    short_tp_prepare := false
+
+// =================================================================================================
+// 绘图
+// =================================================================================================
+
+// 绘制布林通道（确保值有效，避免na导致的问题）
+bb_upper_plot = plot(bb_upper, "BB上轨", color=color.new(color.blue, 50), linewidth=1)
+bb_lower_plot = plot(bb_lower, "BB下轨", color=color.new(color.blue, 50), linewidth=1)
+plot(bb_basis, "BB中线", color=color.blue, linewidth=1)
+fill(bb_upper_plot, bb_lower_plot, color=color.new(color.blue, 95), title="BB填充")
+
+// 绘制肯特纳通道（确保值有效，避免na导致的问题）
+kc_upper_plot = plot(kc_upper, "KC上轨", color=color.new(color.orange, 50), linewidth=1)
+kc_lower_plot = plot(kc_lower, "KC下轨", color=color.new(color.orange, 50), linewidth=1)
+plot(kc_basis, "KC中线", color=color.orange, linewidth=1)
+fill(kc_upper_plot, kc_lower_plot, color=color.new(color.orange, 95), title="KC填充")
+
+// 绘制Squeeze背景（蓝色背景）
+bgcolor(squeeze ? color.new(color.blue, 90) : na, title="Squeeze背景")
+
+// 绘制止损线（直接绘制，不使用var变量，参考Box Scalper策略的方式）
+plot(strategy.position_size > 0 and not na(long_key_bar_low) ? long_key_bar_low : na, 
+     "做多止损", color=color.red, linewidth=2, style=plot.style_linebr)
+plot(strategy.position_size < 0 and not na(short_key_bar_high) ? short_key_bar_high : na, 
+     "做空止损", color=color.red, linewidth=2, style=plot.style_linebr)
+
+// =================================================================================================
+// KDJ指标面板（可选，在副图显示）
+// =================================================================================================
+
+// 注意：KDJ指标通常显示在副图，如果需要显示，可以创建单独的指标脚本
+// 这里只做注释说明
+// plot(kdj_signal, "KDJ K线", color=color.blue)
+// hline(80, "超买线", color=color.red, linestyle=hline.style_dashed)
+// hline(20, "超卖线", color=color.green, linestyle=hline.style_dashed)
+

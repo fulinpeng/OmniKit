@@ -577,6 +577,10 @@ lower_7 = fbb_basis - 1.414 * fbb_dev
     - `trend == 1`（上升趋势确认）
     - `close > minSSL2`（收盘价在minSSL2上方）
 
+**section3Up5**：
+- 趋势反转立即做多
+    - trend[1] === -1 and trend === 1
+
 **开仓条件**：
 - 当前无持仓（`not isHoldingPosition`）
 - `section3Up = true`
@@ -655,6 +659,10 @@ lower_7 = fbb_basis - 1.414 * fbb_dev
     - `ssl55_squeeze_short_signal == true`（K线下穿Squeeze Box上轨 且 close < SSL55）
     - `trend == -1`（下降趋势确认）
     - `close < maxSSL2`（收盘价在maxSSL2下方）
+
+**section3Down5**：
+- 趋势反转立即做空
+    - trend[1] === 1 and trend === -1
 
 **开仓条件**：
 - 当前无持仓（`not isHoldingPosition`）

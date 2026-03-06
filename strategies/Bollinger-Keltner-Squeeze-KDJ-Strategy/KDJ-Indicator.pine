@@ -1,0 +1,38 @@
+//@version=5
+indicator("KDJ指标 (周期25)", shorttitle="KDJ", overlay=false)
+
+// =================================================================================================
+// KDJ指标 - 用于布林通道+肯特纳挤压+KDJ逆势波段策略
+// 参数：周期25（原参数9改为25）
+// =================================================================================================
+
+// 输入参数
+length = input.int(25, title="周期", minval=1, tooltip="原参数9改为25")
+smooth_k = input.int(3, title="K平滑周期", minval=1)
+smooth_d = input.int(3, title="D平滑周期", minval=1)
+
+// KDJ计算
+highest_high = ta.highest(high, length)
+lowest_low = ta.lowest(low, length)
+stoch_k = (close - lowest_low) / (highest_high - lowest_low) * 100
+k = ta.sma(stoch_k, smooth_k)
+d = ta.sma(k, smooth_d)
+j = 3 * k - 2 * d
+
+// 绘图
+plot(k, "K线", color=color.blue, linewidth=2)
+plot(d, "D线", color=color.orange, linewidth=1)
+plot(j, "J线", color=color.purple, linewidth=1)
+
+// 超买超卖线
+hline(80, "超买线", color=color.red, linestyle=hline.style_dashed, linewidth=1)
+hline(50, "中线", color=color.gray, linestyle=hline.style_dotted, linewidth=1)
+hline(20, "超卖线", color=color.green, linestyle=hline.style_dashed, linewidth=1)
+
+// 填充区域
+fill(hline(80), plot(k), color=k > 80 ? color.new(color.red, 80) : na, title="超买区域")
+fill(hline(20), plot(k), color=k < 20 ? color.new(color.green, 80) : na, title="超卖区域")
+
+// 背景颜色
+bgcolor(k > 80 ? color.new(color.red, 95) : k < 20 ? color.new(color.green, 95) : na, title="KDJ背景")
+

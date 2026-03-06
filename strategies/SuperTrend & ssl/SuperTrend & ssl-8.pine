@@ -172,8 +172,8 @@ upperBand1 = nz(upperBand[1], upperBand)
 trend := (trend == -1 and close > upperBand1) ? 1 : (trend == 1 and close < lowerBand1 ? -1 : trend)
 
 // 绘制趋势线
-upPlot = plot(lowerBand, title='上升趋势', style=plot.style_linebr, linewidth=1, color=trend == 1 ? color.new(#8df978, 60) : color.new(#ff52ff, 60))
-dnPlot = plot(upperBand, title='下降趋势', style=plot.style_linebr, linewidth=1, color=trend == 1 ? color.new(#8df978, 60) : color.new(#ff52ff, 60))
+upPlot = plot(lowerBand, title='上升趋势', style=plot.style_linebr, linewidth=3, color=trend == 1 ? color.new(#8df978, 0) : color.new(#ff52ff, 0))
+dnPlot = plot(upperBand, title='下降趋势', style=plot.style_linebr, linewidth=3, color=trend == 1 ? color.new(#8df978, 0) : color.new(#ff52ff, 0))
 
 // ========== SuperTrend 上下轨（提前定义供入场条件使用）==========
 maxSuper = math.max(lowerBand, upperBand)
@@ -668,7 +668,7 @@ squeeze_box_color = enableSSL55Squeeze ? (close > squeeze_box_bh ? color.lime : 
 plot(enableSSL55Squeeze ? squeeze_box_basis : na, color=color.rgb(120, 123, 134, 49), title="Squeeze Box Basis")
 squeeze_box_bhplot = plot(enableSSL55Squeeze ? squeeze_box_bh : na, color=color.new(squeeze_box_color, 50), title="Squeeze Box High Level")
 squeeze_box_blplot = plot(enableSSL55Squeeze ? squeeze_box_bl : na, color=color.new(squeeze_box_color, 50), title="Squeeze Box Low Level")
-fill(squeeze_box_bhplot, squeeze_box_blplot, color=color.new(squeeze_box_color, 87), title="Squeeze Box Fill")
+// fill(squeeze_box_bhplot, squeeze_box_blplot, color=color.new(squeeze_box_color, 87), title="Squeeze Box Fill")
 
 // ==========================================================================================
 //                             SSL55 + Squeeze Box 使用说明
@@ -1436,8 +1436,12 @@ bool section3Up3 = minSSL > maxSSL2 and trend == 1 and close > maxSSL2 and secti
 // 条件：close > SSL55 and ta.crossover(close, BOX_bl)
 bool section3Up4 = enableSSL55Squeeze and ssl55_squeeze_long_signal  and trend == 1 and close > minSSL2
 
-// 综合做多条件：section3Up = (section3Up1 or section3Up2 or section3Up3 or section3Up4)（斜率条件已包含在各自条件中）
-section3Up = section3Up1 or section3Up2 or section3Up3 or section3Up4
+// section3Up5：趋势反转立即做多
+// 条件：trend[1] == -1 and trend == 1
+bool section3Up5 = trend[1] == -1 and trend == 1
+
+// 综合做多条件：section3Up = (section3Up1 or section3Up2 or section3Up3 or section3Up4 or section3Up5)（斜率条件已包含在各自条件中）
+section3Up = section3Up3 or section3Up4// or section3Up5
 buySignal = (section3Up)
 if buySignal
     buySignalBar := bar_index // 记录看多信号的 K 线位置
@@ -1476,8 +1480,12 @@ bool section3Down3 = maxSSL < minSSL2 and trend == -1 and close < minSSL2 and se
 // 条件：close < SSL55 and ta.crossunder(close, BOX_bh)
 bool section3Down4 = enableSSL55Squeeze and ssl55_squeeze_short_signal and trend == -1 and close < maxSSL2
 
-// 综合做空条件：section3Down = (section3Down1 or section3Down2 or section3Down3 or section3Down4)（斜率条件已包含在各自条件中）
-section3Down = section3Down1 or section3Down2 or section3Down3 or section3Down4
+// section3Down5：趋势反转立即做空
+// 条件：trend[1] == 1 and trend == -1
+bool section3Down5 = trend[1] == 1 and trend == -1
+
+// 综合做空条件：section3Down = (section3Down1 or section3Down2 or section3Down3 or section3Down4 or section3Down5)（斜率条件已包含在各自条件中）
+section3Down = section3Down3 or section3Down4// or section3Down5
 sellSignal = (section3Down)
 if sellSignal
     sellSignalBar := bar_index // 记录看空信号的 K 线位置
@@ -1501,10 +1509,14 @@ if (strategy.position_size == 0)
     // 开多仓条件
     if (section3Up) //  and longCond
         // 根据入场方式，写入不同的注释，方便在回测订单列表中区分
-        string longEntryComment = section3Up4 ? '多_SSL55_SQUEEZE' : (section3Up3 ? '多_ADX' : (section3Up2 ? '多_SSL2' : '多_SSL1'))
+        string longEntryComment = section3Up5 ? '多_趋势反转' : (section3Up4 ? '多_SSL55_SQUEEZE' : (section3Up3 ? '多_ADX' : (section3Up2 ? '多_SSL2' : '多_SSL1')))
         strategy.entry('buy', strategy.long, comment=longEntryComment)
         // 使用 log 日志记录入场信息
-        if section3Up4
+        if section3Up5
+            // 趋势反转入场日志
+            string trendReversalLongLogMsg = 'Trend Reversal LONG entry - bar_index=' + str.tostring(bar_index) + ' | price=' + str.tostring(close) + ' | trend[1]=' + str.tostring(trend[1]) + ' | trend=' + str.tostring(trend)
+            log.info(trendReversalLongLogMsg)
+        else if section3Up4
             // SSL55 + Squeeze Box 入场日志
             string ssl55SqueezeLongLogMsg = 'SSL55+Squeeze LONG entry - bar_index=' + str.tostring(bar_index) + ' | price=' + str.tostring(close) + ' | ssl55=' + str.tostring(ssl55_value) + ' | box_bl=' + str.tostring(squeeze_box_bl)
             log.info(ssl55SqueezeLongLogMsg)
@@ -1519,8 +1531,8 @@ if (strategy.position_size == 0)
         buySignalBar := na // 开仓后移除看多信号
         entryPrice := close
         entryBarIndex := bar_index
-        // 保存开仓时的初始止损位
-        initialLongStopLoss := minSuper
+        // 保存开仓时的初始止损位：多单 = (superTrend下轨 + fib下轨 + SSL下轨 + SSL2下轨) / 4
+        initialLongStopLoss := minSuper // (minSuper + lower_7 + sslDown2) / 3
         initialLongPositionSize := na  // 重置，等待持仓逻辑中记录实际仓位大小
         lastLongIndicatorTPBar := na  // 重置指标止盈冷却期
         longIndicatorTPCount := 0  // 重置指标止盈计数
@@ -1538,10 +1550,14 @@ if (strategy.position_size == 0)
     // 开空仓条件
     if (section3Down) //  and shortCond
         // 根据入场方式，写入不同的注释，方便在回测订单列表中区分
-        string shortEntryComment = section3Down4 ? '空_SSL55_SQUEEZE' : (section3Down3 ? '空_ADX' : (section3Down2 ? '空_SSL2' : '空_SSL1'))
+        string shortEntryComment = section3Down5 ? '空_趋势反转' : (section3Down4 ? '空_SSL55_SQUEEZE' : (section3Down3 ? '空_ADX' : (section3Down2 ? '空_SSL2' : '空_SSL1')))
         strategy.entry('sell', strategy.short, comment=shortEntryComment)
         // 使用 log 日志记录入场信息
-        if section3Down4
+        if section3Down5
+            // 趋势反转入场日志
+            string trendReversalShortLogMsg = 'Trend Reversal SHORT entry - bar_index=' + str.tostring(bar_index) + ' | price=' + str.tostring(close) + ' | trend[1]=' + str.tostring(trend[1]) + ' | trend=' + str.tostring(trend)
+            log.info(trendReversalShortLogMsg)
+        else if section3Down4
             // SSL55 + Squeeze Box 入场日志
             string ssl55SqueezeShortLogMsg = 'SSL55+Squeeze SHORT entry - bar_index=' + str.tostring(bar_index) + ' | price=' + str.tostring(close) + ' | ssl55=' + str.tostring(ssl55_value) + ' | box_bh=' + str.tostring(squeeze_box_bh)
             log.info(ssl55SqueezeShortLogMsg)
@@ -1556,8 +1572,8 @@ if (strategy.position_size == 0)
         sellSignalBar := na // 开仓后移除看空信号
         entryPrice := close
         entryBarIndex := bar_index
-        // 保存开仓时的初始止损位
-        initialShortStopLoss := maxSuper
+        // 保存开仓时的初始止损位：空单 = (superTrend上轨 + fib上轨 + SSL上轨 + SSL2上轨) / 4
+        initialShortStopLoss := maxSuper // (maxSuper + upper_7 + sslUp2) / 3
         initialShortPositionSize := na  // 重置，等待持仓逻辑中记录实际仓位大小
         lastShortIndicatorTPBar := na  // 重置指标止盈冷却期
         shortIndicatorTPCount := 0  // 重置指标止盈计数
@@ -1583,6 +1599,7 @@ profitPercentTakeProfit = input.float(0.03, title="盈利百分比止盈阈值",
 indicatorTPCountThreshold = input.int(3, title="指标止盈计数阈值", minval=1, step=1, group=group_risk, tooltip="指标止盈计数达到此值时全部平仓，默认3")
 indicatorTPPartialCount = input.int(1, title="分批止盈触发计数", minval=1, step=1, group=group_risk, tooltip="指标止盈计数达到此值时执行分批平仓，默认1（首次达到时执行）")
 indicatorTPPartialRatio = input.float(0.5, title="首次指标止盈平仓比例", minval=0.0, maxval=1.0, step=0.1, group=group_risk, tooltip="首次达到指标止盈时平仓的比例，默认0.5（50%）。如果配置为0，则不执行平仓逻辑，认为是关闭了分批止盈")
+indicatorTPCoolingPeriod = input.int(5, title="指标止盈冷却期（K线数）", minval=1, step=1, group=group_risk, tooltip="到达一次指标止盈位后，在此冷却期内不再计数。超过冷却期后再次到达的需要增加一次计数，默认5根K线")
 priceTolerance = input.float(0.0005, title="价格容差", minval=0.0, step=0.0005, group=group_risk, tooltip="容差范围：[目标价格*(1-容差配置), 目标价格*(1+容差配置)]，默认0.0005。在容差范围内均可认为达到目标，不需要等待精确值")
 
 // ========== 止盈止损逻辑 ==========
@@ -1654,8 +1671,8 @@ if strategy.position_size > 0
         entryBarIndex := bar_index
     
     // 指标止盈：计数机制
-    // 检查是否在冷却期内（到达一次指标止盈位后5根K线内不再计数，超过5根K线再次到达的需要增加一次计数）
-    bool longIndicatorTPCooling = not na(lastLongIndicatorTPBar) and (bar_index - lastLongIndicatorTPBar) < 5
+    // 检查是否在冷却期内（到达一次指标止盈位后指定K线数内不再计数，超过冷却期后再次到达的需要增加一次计数）
+    bool longIndicatorTPCooling = not na(lastLongIndicatorTPBar) and (bar_index - lastLongIndicatorTPBar) < indicatorTPCoolingPeriod
     // 检查是否达到指标止盈条件
     bool longIndicatorTPTriggered = (longTakeProfit2 or longTakeProfit3) and strategy.position_size > 0
     
@@ -1756,8 +1773,8 @@ if strategy.position_size < 0
         entryBarIndex := bar_index
     
     // 指标止盈：计数机制
-    // 检查是否在冷却期内（到达一次指标止盈位后5根K线内不再计数，超过5根K线再次到达的需要增加一次计数）
-    bool shortIndicatorTPCooling = not na(lastShortIndicatorTPBar) and (bar_index - lastShortIndicatorTPBar) < 5
+    // 检查是否在冷却期内（到达一次指标止盈位后指定K线数内不再计数，超过冷却期后再次到达的需要增加一次计数）
+    bool shortIndicatorTPCooling = not na(lastShortIndicatorTPBar) and (bar_index - lastShortIndicatorTPBar) < indicatorTPCoolingPeriod
     // 检查是否达到指标止盈条件
     bool shortIndicatorTPTriggered = (shortTakeProfit2 or shortTakeProfit3) and strategy.position_size < 0
     

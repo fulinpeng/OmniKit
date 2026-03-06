@@ -104,8 +104,10 @@ ffmpeg -version
 yt-dlp --proxy "http://127.0.0.1:15715" \
   -f "bestvideo[height<=1080]+bestaudio/best[height<=1080]" \
   --merge-output-format mp4 \
+  --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
+  --extractor-args "youtube:player_client=android" \
   -o "downloads/%(title)s.%(ext)s" \
-  "https://youtu.be/VIDEO_ID"
+  "https://www.youtube.com/watch?v=To1pZnOFMp4"
 ```
 
 ## 常见问题
