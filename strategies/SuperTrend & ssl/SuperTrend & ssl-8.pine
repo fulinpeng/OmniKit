@@ -1430,7 +1430,7 @@ for i = 0 to 9
     if close[i] > upper_6[i]
         section3Up3_noExtremeHigh := false
         break
-bool section3Up3 = minSSL > maxSSL2 and trend == 1 and close > maxSSL2 and section3Up3_adxCross and section3Up3_adxRising and section3Up3_adxCondition and section3Up3_noExtremeHigh
+bool section3Up3 = minSSL > maxSSL2 and trend == 1 and close > maxSSL2 and section3Up3_adxCross and section3Up3_adxRising and section3Up3_adxCondition and section3Up3_noExtremeHigh  and close <= (lowerBand + upperBand)/2
 
 // section3Up4：SSL55 + Squeeze Box 入场 - 所有条件都要满足
 // 条件：close > SSL55 and ta.crossover(close, BOX_bl)
@@ -1467,7 +1467,7 @@ bool section3Down2 = minSSL < maxSSL2 and trend == -1 and qqe_shortConditionSSL2
 bool section3Down3_adxCross = ta.crossover(ADX, DIMinus)
 bool section3Down3_adxRising = ADX > ADX[1] and ADX[1] > ADX[2]
 // DIMinus > 20 and DIPlus < 20 and 20 < ADX < 40
-bool section3Down3_adxCondition = DIMinus > adx_threshold_low and DIPlus < adx_threshold_low and ADX > adx_threshold_low and ADX < adx_threshold_high
+bool section3Down3_adxCondition = DIMinus > adx_threshold_low and DIPlus < adx_threshold_low and ADX > adx_threshold_low and ADX < adx_threshold_high  and close >= (lowerBand + upperBand)/2
 // 最近10根K线不能有 close < lower_6
 bool section3Down3_noExtremeLow = true
 for i = 0 to 9
