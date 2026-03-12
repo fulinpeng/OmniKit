@@ -2,6 +2,61 @@
 
 //@version=5
 
+// ============================================================================
+// 策略名称：Oscillating SSL Channel Strategy (震荡SSL通道策略)
+// ============================================================================
+//
+// 【策略概述】
+// 本策略基于 SSL (Smoothed Support/Resistance Levels) 指标构建，通过识别价格与SSL通道的
+// 相对位置和交叉信号来判断趋势方向，实现震荡市场的波段交易。
+//
+// 【核心指标：SSL通道】
+// SSL通道由两条动态支撑/阻力线组成：
+// - sslUp（绿色线）：上升趋势中的支撑线，下降趋势中的阻力线
+// - sslDown（红色线）：下降趋势中的阻力线，上升趋势中的支撑线
+//
+// SSL计算逻辑：
+// 1. 计算 high 和 low 的简单移动平均（SMA）
+// 2. 根据收盘价与SMA的关系判断趋势方向（Hlv值）
+// 3. 根据趋势方向动态切换 sslUp 和 sslDown 的值
+//
+// 【交易逻辑】
+//
+// 【做多条件】
+// 1. sslUp > sslDown（上升趋势确认）
+// 2. high 上穿 sslUp（价格突破阻力）
+// 满足以上条件时开多单
+//
+// 【做多平仓条件】
+// sslUp 下穿 sslDown（趋势反转信号）
+//
+// 【做空条件】
+// 1. sslDown > sslUp（下降趋势确认）
+// 2. low 下穿 sslUp（价格跌破支撑）
+// 满足以上条件时开空单
+//
+// 【做空平仓条件】
+// sslDown 下穿 sslUp（趋势反转信号）
+//
+// 【参数设置】
+// - Period: 25（SSL通道计算周期，默认25）
+// - 初始资金: 100
+// - 仓位类型: 账户权益百分比（100%）
+// - 加仓次数: 1
+//
+// 【使用建议】
+// 1. 适用于震荡市场和趋势市场
+// 2. 建议在15分钟及以上时间周期使用
+// 3. 可根据不同市场调整 Period 参数
+// 4. 注意：代码中注释了成交量过滤条件，可根据需要启用
+//
+// 【风险提示】
+// - 震荡市场中可能出现频繁交易，注意控制交易成本
+// - 建议结合其他技术指标或市场环境进行过滤
+// - 回测时注意设置合理的佣金和滑点
+//
+// ============================================================================
+
             //////  Name the strategy between the 2 quotation marks.  Consider setting commission type and value in strategy header to match exchanges rates. //////
 
 strategy("Oscillating SSL Channel Strategy", "O-SSL Strat", overlay=true, pyramiding=1, default_qty_type = strategy.percent_of_equity, default_qty_value = 100, initial_capital = 100, calc_on_order_fills=true)
