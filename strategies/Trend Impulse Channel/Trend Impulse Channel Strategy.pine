@@ -1,0 +1,168 @@
+//@version=5
+strategy("Trend Impulse Channel Strategy", overlay=true, pyramiding=3, initial_capital=1000, default_qty_type=strategy.percent_of_equity, default_qty_value=10)
+
+// === INPUTS ===
+flipMult   = input.float(2.86, step=0.01, title="Trigger Threshold")
+maxStepAtr = input.float(-0.034, step=0.001, title="Max Step Size")
+bandMult   = input.float(2.02, step=0.01, title="Band Multiplier")
+holdBars   = input.int(15, minval=0, title="Trend Hold")
+
+adxLen = input.int(20, title="ADX Length")
+atrLen = input.int(20, title="ATR Length")
+
+// === ENTRY FILTER INPUTS ===
+adxThreshold = input.float(20.0, minval=0.0, step=0.1, title="ADX Threshold", group="Entry Filters")
+useChannelBreakout = input.bool(true, title="Use Channel Breakout", group="Entry Filters", tooltip="Enable entry on channel boundary breakout")
+
+// === PLOT INPUTS ===
+colorUp    = input.color(color.lime, title="Up Trend Color", group="Channel Colors")
+colorDown  = input.color(color.red, title="Down Trend Color", group="Channel Colors")
+showFill   = input.bool(true, title="Channel Fill", group="Channel Colors")
+
+ChannelRetestSignal = input.bool(true, title="Retest Signals", group="Retest Signals")
+TrendFilter  = input.bool(true, title="Filter by Trend", group="Retest Signals")
+colorUp2     = input.color(color.lime, title="Lower Retest Color", group="Retest Signals")
+colorDown2   = input.color(color.red, title="Upper Retest Color", group="Retest Signals")
+
+TrendStepSignal = input.bool(false, title="Trend Step Signals", group="Trend Step Signals")
+colorUp3    = input.color(color.lime, title="Bullish Step Color", group="Trend Step Signals")
+colorDown3  = input.color(color.red, title="Bearish Step Color", group="Trend Step Signals")
+
+// === ATR ===
+atr = ta.atr(200)
+stepBase = atr * 2.52
+maxStep  = atr * maxStepAtr
+trigger  = atr * flipMult
+
+// === VARIABLES ===
+var float trend = na
+var int dir = 0
+var int barsInTrend = 0
+var int extension = 0
+
+// === TREND LOGIC ===
+startLong  = close > nz(trend) + trigger
+startShort = close < nz(trend) - trigger
+flip       = startLong or startShort
+
+stepSize   = math.min(stepBase + 0.0093 * barsInTrend * atr, maxStep)
+
+if na(trend)
+    trend := close
+    dir := 0
+    barsInTrend := 0
+    extension := 0
+else
+    if flip and extension <= 0
+        trend := close
+        dir := startLong ? 1 : -1
+        barsInTrend := 1
+        extension := holdBars
+    else
+        trend := trend + (dir == 1 ? stepSize : dir == -1 ? -stepSize : 0)
+        barsInTrend += 1
+        extension := math.max(extension - 1, 0)
+
+// === CHANNEL ===
+trendDirection = dir == 1 ? 1 : dir == -1 ? -1 : 0
+upper = trend + atr * bandMult
+lower = trend - atr * bandMult
+
+// === ADX FILTER ===
+upMove = high - high[1]
+downMove = low[1] - low
+
+plusDM = upMove > downMove and upMove > 0 ? upMove : 0
+minusDM = downMove > upMove and downMove > 0 ? downMove : 0
+
+trur = ta.rma(ta.tr, adxLen)
+plusDI = 100 * ta.rma(plusDM, adxLen) / trur
+minusDI = 100 * ta.rma(minusDM, adxLen) / trur
+dx = 100 * math.abs(plusDI - minusDI) / (plusDI + minusDI)
+adx = ta.rma(dx, adxLen)
+
+// === ENTRY CONDITIONS ===
+longEntry =
+     dir == 1
+ and (useChannelBreakout ? ta.crossunder(low, lower) : true)
+ and adx > adxThreshold
+
+shortEntry =
+     dir == -1
+ and (useChannelBreakout ? ta.crossover(high, upper) : true)
+ and adx > adxThreshold
+
+// === TREND STEP (FOR PYRAMID) ===
+trendStep = trend != trend[1]
+// More precise trend step for plotting
+trendStepPlot = (dir != 0) and (trend != trend[1]) and ((trend > trend[1] and dir == 1) or (trend < trend[1] and dir == -1))
+
+// === ENTRIES ===
+if longEntry
+    strategy.entry("LONG", strategy.long)
+
+if shortEntry
+    strategy.entry("SHORT", strategy.short)
+
+// === PYRAMID ADD ===
+if strategy.position_size > 0 and dir == 1 and trendStep
+    strategy.entry("ADD_LONG", strategy.long)
+
+if strategy.position_size < 0 and dir == -1 and trendStep
+    strategy.entry("ADD_SHORT", strategy.short)
+
+// === ATR STOP ===
+atrTrade = ta.atr(atrLen)
+
+longStop = strategy.position_avg_price - atrTrade * 2
+shortStop = strategy.position_avg_price + atrTrade * 2
+
+// === TRAILING STOP ===
+var float highestSinceEntry = na
+var float lowestSinceEntry = na
+
+if strategy.position_size > 0
+    highestSinceEntry := na(highestSinceEntry) ? high : math.max(highestSinceEntry, high)
+else
+    highestSinceEntry := na
+
+if strategy.position_size < 0
+    lowestSinceEntry := na(lowestSinceEntry) ? low : math.min(lowestSinceEntry, low)
+else
+    lowestSinceEntry := na
+
+longTrail = highestSinceEntry - atrTrade * 3
+shortTrail = lowestSinceEntry + atrTrade * 3
+
+// === EXIT ===
+if strategy.position_size > 0
+    strategy.exit("EXIT_LONG", stop=math.max(longStop,longTrail))
+
+if strategy.position_size < 0
+    strategy.exit("EXIT_SHORT", stop=math.min(shortStop,shortTrail))
+
+// === PLOT ===
+trendColor = dir == 1 ? colorUp : dir == -1 ? colorDown : color.gray
+
+plotMid    = plot(trend, "Trend Line", color=trendColor, linewidth=2)
+plotUpper  = plot(showFill ? upper : na, "Upper Band", color=na)
+plotLower  = plot(showFill ? lower : na, "Lower Band", color=na)
+fill(plotUpper, plotMid, upper, trend, showFill ? color.new(trendColor, 60) : na, na)
+fill(plotLower, plotMid, lower, trend, showFill ? color.new(trendColor, 60) : na, na)
+
+// === RETEST SIGNALS ===
+Crossunder = ta.crossunder(low, lower)
+Crossover  = ta.crossover(high, upper)
+
+if TrendFilter
+    Crossunder := ta.crossunder(low, lower) and trendDirection == 1
+    Crossover  := ta.crossover(high, upper) and trendDirection == -1
+
+plotshape(Crossunder and ChannelRetestSignal ? low : na, title="Lower Retest", color=colorUp2, style=shape.triangleup, size=size.tiny, location=location.belowbar)
+plotshape(Crossover and ChannelRetestSignal ? high : na, title="Upper Retest", color=colorDown2, style=shape.triangledown, size=size.tiny, location=location.abovebar)
+
+// === TREND STEP SIGNALS ===
+plotshape(trendStepPlot and dir == 1 and TrendStepSignal ? high : na, title="Bullish Step", location=location.absolute, style=shape.circle, color=colorUp3, size=size.tiny)
+plotshape(trendStepPlot and dir == -1 and TrendStepSignal ? low : na, title="Bearish Step", location=location.absolute, style=shape.circle, color=colorDown3, size=size.tiny)
+plotshape(trendStepPlot and dir == 1 and TrendStepSignal ? high : na, title="Bullish Step Large", location=location.absolute, style=shape.circle, color=color.new(colorUp3, 50), size=size.small)
+plotshape(trendStepPlot and dir == -1 and TrendStepSignal ? low : na, title="Bearish Step Large", location=location.absolute, style=shape.circle, color=color.new(colorDown3, 50), size=size.small)
