@@ -19,3 +19,14 @@ Thumbs.db
 *.swp
 *.swo
 
+# Python（subtitle-extractor 等）
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+dist/
+build/
+*.egg
