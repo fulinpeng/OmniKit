@@ -30,3 +30,11 @@ __pycache__/
 dist/
 build/
 *.egg
+
+# bossJD（Boss 直聘采集）
+bossJD/.browser_profile/
+bossJD/auth.json
+bossJD/cookies.json
+bossJD/jobs.json
+bossJD/cities/
+bossJD/seed_pages/
