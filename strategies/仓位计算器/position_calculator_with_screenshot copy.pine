@@ -4,8 +4,6 @@ indicator("智能仓位计算器 (Smart Position Size Calculator)", overlay=true
 // ==================== 输入参数 ====================
 
 // ==================== 第一组：账户与风险设置 ====================
-// 仓位方向
-position_type = input.string("做多", "仓位方向", options=["做多", "做空"], group="📊 账户与风险设置")
 
 // 总账户资金
 account_size = input.float(10000.0, "总账户资金 ($)", minval=0.01, step=100, group="📊 账户与风险设置", 
@@ -14,6 +12,10 @@ account_size = input.float(10000.0, "总账户资金 ($)", minval=0.01, step=100
 // 最大风险百分比
 max_risk_pct = input.float(1.0, "最大风险百分比 (%)", minval=0.01, maxval=100, step=0.1, group="📊 账户与风险设置", 
      tooltip="单笔亏损最大不能超过仓位的百分比")
+
+// 超限自动限制
+cap_to_account = input.bool(false, "超限时限制为账户总额", group="📊 账户与风险设置",
+     tooltip="开启后：仓位计算结果超过账户总额时，自动调整为账户总额，并在表格底部提示")
 
 // ==================== 第二组：交易价格参数 ====================
 // 入场价格设置
@@ -24,14 +26,13 @@ custom_entry_price = input.float(0.0, "自定义入场价格", minval=0, step=0.
 // 止损价格设置
 custom_stop_loss = input.float(0.0, "止损价格", minval=0, step=0.01, group="💰 交易价格参数")
 
-// 止盈价格设置
-custom_target_price = input.float(0.0, "止盈价格", minval=0, step=0.01, group="💰 交易价格参数")
-
 // ==================== 第三组：显示选项 ====================
 show_table = input.bool(true, "显示计算结果表格", group="🎨 显示选项")
 show_trade_details = input.bool(true, "显示交易详情", group="🎨 显示选项", 
-     tooltip="显示止损比例、止盈比例、预计盈亏金额、盈亏比等详细信息")
+     tooltip="显示止损比例、预计止损金额、1R/2R/3R 盈利等详细信息")
 show_lines = input.bool(true, "显示入场/止损线", group="🎨 显示选项")
+show_profit_lines = input.bool(false, "显示盈利线", group="🎨 显示选项",
+     tooltip="在图表上显示 1R / 2R / 3R 盈利线")
 table_position = input.string("右上", "表格位置", 
      options=["左上", "中上", "右上", "左下", "中下", "右下"], group="🎨 显示选项")
 
@@ -45,16 +46,10 @@ entry_price = entry_price_source == "当前价格" ? close : custom_entry_price
 // 确定止损价格
 stop_loss_price = custom_stop_loss
 
-// 确定止盈价格
-target_price = custom_target_price
-
 // ==================== 核心仓位计算 ====================
 
 // 计算止损比例（入场价格到止损价格的比例）
 stop_loss_ratio = math.abs(stop_loss_price - entry_price) / entry_price
-
-// 计算止盈比例（入场价格到止盈价格的比例）
-take_profit_ratio = math.abs(target_price - entry_price) / entry_price
 
 // 计算单笔最大持仓（根据方程式求解）
 // 方程式: 止损比例 × 单笔持仓价值 = 账户总资金 × 最大风险比例
@@ -67,72 +62,106 @@ max_risk_amount = account_size * (max_risk_pct / 100)
 // 检查仓位是否超过账户总额
 is_over_account_limit = max_position_size > account_size
 
-// 如果超过账户总额，使用账户总额
-final_position_size = is_over_account_limit ? account_size : max_position_size
+// 开启开关且超过账户总额时，使用账户总额
+final_position_size = cap_to_account and is_over_account_limit ? account_size : max_position_size
+
+// 是否显示超限提示（仅在开启自动限制且确实超限时）
+show_over_limit_warn = cap_to_account and is_over_account_limit
 
 // 计算单位数量
 position_units = entry_price > 0 ? final_position_size / entry_price : 0
 
-// 计算盈亏比
+// 1R 价格距离（入场到止损）
 price_diff = math.abs(entry_price - stop_loss_price)
-target_diff = math.abs(target_price - entry_price)
-risk_reward_ratio = price_diff > 0 ? target_diff / price_diff : 0
 
-// 计算预期收益和损失
-expected_profit = position_units * target_diff
+// 预计止损金额（= 1R 风险金额）
 expected_loss = position_units * price_diff
 
-// 计算账户余额变化
-target_account_balance = account_size + expected_profit
-stop_account_balance = account_size - expected_loss
+// 1R / 2R / 3R 盈利金额（自动计算）
+r1_profit = expected_loss
+r2_profit = expected_loss * 2
+r3_profit = expected_loss * 3
+
+// 盈利价位：止损关于入场的镜像（最新入场/止损只在最后一根画线时使用）
+// 做多：止损在下方 → 1R/2R/3R 在上方；做空：止损在上方 → 1R/2R/3R 在下方
+is_long = position_type == "做多"
+risk_signed = entry_price - stop_loss_price
+r1_price = entry_price + risk_signed
+r2_price = entry_price + risk_signed * 2
+r3_price = entry_price + risk_signed * 3
 
 
-// ==================== 绘制入场线和止损线 ====================
+// ==================== 绘制入场 / 止损 / 盈利线 ====================
 
 var line entry_line = na
 var line stop_line = na
-var line target_line = na
+var line r1_line = na
+var line r2_line = na
+var line r3_line = na
 var label entry_label = na
 var label stop_label = na
-var label target_label = na
+var label r1_label = na
+var label r2_label = na
+var label r3_label = na
 
-// 绘制预览线
-if show_lines and barstate.islast
+// 与入场/止损线同一套画法：只在最后一根 K 线用当前入场、止损画一次
+if barstate.islast
     // 删除旧的线和标签
     if not na(entry_line)
         line.delete(entry_line)
     if not na(stop_line)
         line.delete(stop_line)
-    if not na(target_line)
-        line.delete(target_line)
+    if not na(r1_line)
+        line.delete(r1_line)
+    if not na(r2_line)
+        line.delete(r2_line)
+    if not na(r3_line)
+        line.delete(r3_line)
     if not na(entry_label)
         label.delete(entry_label)
     if not na(stop_label)
         label.delete(stop_label)
-    if not na(target_label)
-        label.delete(target_label)
-    
-    // 绘制入场线
-    entry_line := line.new(bar_index - 50, entry_price, bar_index + 50, entry_price, 
-         color=color.new(color.yellow, 0), width=2, style=line.style_dashed)
-    entry_label := label.new(bar_index + 50, entry_price, 
-         text="入场: " + str.tostring(entry_price, format.mintick), 
-         style=label.style_label_left, color=color.yellow, textcolor=color.black, size=size.small)
-    
-    // 绘制止损线
-    stop_color = position_type == "做多" ? color.red : color.green
-    stop_line := line.new(bar_index - 50, stop_loss_price, bar_index + 50, stop_loss_price, 
-         color=color.new(stop_color, 0), width=2, style=line.style_dashed)
-    stop_label := label.new(bar_index + 50, stop_loss_price, 
-         text="止损: " + str.tostring(stop_loss_price, format.mintick), 
-         style=label.style_label_left, color=stop_color, textcolor=color.white, size=size.small)
-    
-    // 绘制目标线
-    target_line := line.new(bar_index - 50, target_price, bar_index + 50, target_price, 
-         color=color.new(color.green, 0), width=2, style=line.style_dashed)
-    target_label := label.new(bar_index + 50, target_price, 
-         text="目标: " + str.tostring(target_price, format.mintick), 
-         style=label.style_label_left, color=color.green, textcolor=color.white, size=size.small)
+    if not na(r1_label)
+        label.delete(r1_label)
+    if not na(r2_label)
+        label.delete(r2_label)
+    if not na(r3_label)
+        label.delete(r3_label)
+
+    // 绘制入场线和止损线
+    if show_lines
+        entry_line := line.new(bar_index - 50, entry_price, bar_index + 50, entry_price, 
+             color=color.new(color.yellow, 0), width=2, style=line.style_dashed)
+        entry_label := label.new(bar_index + 50, entry_price, 
+             text="入场: " + str.tostring(entry_price, format.mintick), 
+             style=label.style_label_left, color=color.yellow, textcolor=color.black, size=size.small)
+
+        stop_color = is_long ? color.red : color.green
+        stop_line := line.new(bar_index - 50, stop_loss_price, bar_index + 50, stop_loss_price, 
+             color=color.new(stop_color, 0), width=2, style=line.style_dashed)
+        stop_label := label.new(bar_index + 50, stop_loss_price, 
+             text="止损: " + str.tostring(stop_loss_price, format.mintick) + " ($" + str.tostring(expected_loss, "#.##") + ")", 
+             style=label.style_label_left, color=stop_color, textcolor=color.white, size=size.small)
+
+    // 绘制 1R / 2R / 3R 盈利线（仅勾选时，按当前最新入场/止损计算）
+    if show_profit_lines and price_diff > 0
+        r1_line := line.new(bar_index - 50, r1_price, bar_index + 50, r1_price, 
+             color=color.new(color.lime, 0), width=2, style=line.style_dashed)
+        r1_label := label.new(bar_index + 50, r1_price, 
+             text="1R: " + str.tostring(r1_price, format.mintick), 
+             style=label.style_label_left, color=color.lime, textcolor=color.black, size=size.small)
+
+        r2_line := line.new(bar_index - 50, r2_price, bar_index + 50, r2_price, 
+             color=color.new(#26a69a, 0), width=2, style=line.style_dashed)
+        r2_label := label.new(bar_index + 50, r2_price, 
+             text="2R: " + str.tostring(r2_price, format.mintick), 
+             style=label.style_label_left, color=#26a69a, textcolor=color.white, size=size.small)
+
+        r3_line := line.new(bar_index - 50, r3_price, bar_index + 50, r3_price, 
+             color=color.new(#00897b, 0), width=2, style=line.style_dashed)
+        r3_label := label.new(bar_index + 50, r3_price, 
+             text="3R: " + str.tostring(r3_price, format.mintick), 
+             style=label.style_label_left, color=#00897b, textcolor=color.white, size=size.small)
 
 
 // ==================== 显示结果表格 ====================
@@ -146,11 +175,8 @@ if show_table and barstate.islast
          table_position == "中下" ? position.bottom_center : 
          position.bottom_right
     
-    // 根据是否显示交易详情来确定表格行数
-    table_rows = show_trade_details ? 16 : 9
-    
-    // 创建表格
-    var table result_table = table.new(table_pos, 2, table_rows, 
+    // 创建表格（固定 17 行，超限时使用最后一行）
+    var table result_table = table.new(table_pos, 2, 17, 
          bgcolor=color.new(color.gray, 85), 
          frame_color=color.new(color.gray, 50), 
          frame_width=2, 
@@ -158,7 +184,7 @@ if show_table and barstate.islast
          border_color=color.new(color.gray, 70))
     
     // 清空表格
-    table.clear(result_table, 0, 0, 1, table_rows - 1)
+    table.clear(result_table, 0, 0, 1, 16)
     
     // 标题
     table.cell(result_table, 0, 0, "智能仓位计算器", 
@@ -175,7 +201,7 @@ if show_table and barstate.islast
     table.cell(result_table, 0, 2, "仓位方向", 
          text_color=color.white, text_size=size.small, text_halign=text.align_left)
     table.cell(result_table, 1, 2, position_type, 
-         text_color=position_type == "做多" ? color.green : color.red, 
+         text_color=is_long ? color.green : color.red, 
          text_size=size.small, text_halign=text.align_right)
     
     table.cell(result_table, 0, 3, "总账户大小", 
@@ -203,8 +229,7 @@ if show_table and barstate.islast
     // 单笔仓位大小（核心 - 最突出）
     table.cell(result_table, 0, 7, "单笔仓位大小 ($)", 
          text_color=color.white, text_size=size.normal, text_halign=text.align_left)
-    position_color = is_over_account_limit ? color.red : color.lime
-    // 显示纯数字便于复制
+    position_color = show_over_limit_warn ? color.red : color.lime
     position_value_str = str.tostring(final_position_size, "#.##")
     table.cell(result_table, 1, 7, position_value_str, 
          text_color=position_color, text_size=size.large, text_halign=text.align_right,
@@ -213,7 +238,6 @@ if show_table and barstate.islast
     // 单位数量
     table.cell(result_table, 0, 8, "单位数量", 
          text_color=color.white, text_size=size.normal, text_halign=text.align_left)
-    // 显示纯数字便于复制
     units_value_str = str.tostring(position_units, "#.####")
     table.cell(result_table, 1, 8, units_value_str, 
          text_color=position_color, text_size=size.large, text_halign=text.align_right,
@@ -238,30 +262,37 @@ if show_table and barstate.islast
         table.cell(result_table, 1, 11, str.tostring(stop_loss_ratio * 100, "#.##") + "%", 
              text_color=color.red, text_size=size.small, text_halign=text.align_right)
         
-        // 止盈比例
-        table.cell(result_table, 0, 12, "止盈比例", 
+        // 预计止损金额（1R 风险）
+        table.cell(result_table, 0, 12, "预计止损金额", 
              text_color=color.white, text_size=size.small, text_halign=text.align_left)
-        table.cell(result_table, 1, 12, str.tostring(take_profit_ratio * 100, "#.##") + "%", 
-             text_color=color.green, text_size=size.small, text_halign=text.align_right)
-        
-        // 预计止损金额
-        table.cell(result_table, 0, 13, "预计止损金额", 
-             text_color=color.white, text_size=size.small, text_halign=text.align_left)
-        table.cell(result_table, 1, 13, "$" + str.tostring(expected_loss, "#,###.##"), 
+        table.cell(result_table, 1, 12, "$" + str.tostring(expected_loss, "#,###.##"), 
              text_color=color.red, text_size=size.small, text_halign=text.align_right)
         
-        // 预计盈利金额
-        table.cell(result_table, 0, 14, "预计盈利金额", 
+        // 1R 盈利
+        table.cell(result_table, 0, 13, "1R 盈利", 
              text_color=color.white, text_size=size.small, text_halign=text.align_left)
-        table.cell(result_table, 1, 14, "$" + str.tostring(expected_profit, "#,###.##"), 
+        table.cell(result_table, 1, 13, "$" + str.tostring(r1_profit, "#,###.##"), 
+             text_color=color.lime, text_size=size.small, text_halign=text.align_right)
+        
+        // 2R 盈利
+        table.cell(result_table, 0, 14, "2R 盈利", 
+             text_color=color.white, text_size=size.small, text_halign=text.align_left)
+        table.cell(result_table, 1, 14, "$" + str.tostring(r2_profit, "#,###.##"), 
              text_color=color.green, text_size=size.small, text_halign=text.align_right)
         
-        // 盈亏比
-        table.cell(result_table, 0, 15, "盈亏比 (R:R)", 
+        // 3R 盈利
+        table.cell(result_table, 0, 15, "3R 盈利", 
              text_color=color.white, text_size=size.small, text_halign=text.align_left)
-        rr_color = risk_reward_ratio >= 2 ? color.green : risk_reward_ratio >= 1 ? color.orange : color.red
-        table.cell(result_table, 1, 15, str.tostring(risk_reward_ratio, "#.##") + ":1", 
-             text_color=rr_color, text_size=size.small, text_halign=text.align_right)
+        table.cell(result_table, 1, 15, "$" + str.tostring(r3_profit, "#,###.##"), 
+             text_color=#26a69a, text_size=size.small, text_halign=text.align_right)
+    
+    // 仓位超限提示（表格最后一行，需开启「超限时限制为账户总额」）
+    if show_over_limit_warn
+        warn_row = show_trade_details ? 16 : 9
+        table.cell(result_table, 0, warn_row, "⚠️ 仓位超过账户总额！已自动调整至账户总额", 
+             text_color=color.white, bgcolor=color.new(color.red, 0), 
+             text_size=size.small, text_halign=text.align_center)
+        table.merge_cells(result_table, 0, warn_row, 1, warn_row)
 
 // ==================== 绘图输出（用于数据导出） ====================
 
@@ -270,17 +301,10 @@ plot(position_units, "单位数量", color=color.new(color.green, 100), display=
 plot(stop_loss_ratio * 100, "止损比例(%)", color=color.new(color.red, 100), display=display.data_window)
 plot(entry_price, "入场价格", color=color.new(color.blue, 100), display=display.data_window)
 plot(stop_loss_price, "止损价格", color=color.new(color.red, 100), display=display.data_window)
-plot(target_price, "目标价格", color=color.new(color.green, 100), display=display.data_window)
+plot(r1_price, "1R价格", color=color.new(color.lime, 100), display=display.data_window)
+plot(r2_price, "2R价格", color=color.new(color.green, 100), display=display.data_window)
+plot(r3_price, "3R价格", color=color.new(#00897b, 100), display=display.data_window)
+plot(r1_profit, "1R盈利", color=color.new(color.lime, 100), display=display.data_window)
+plot(r2_profit, "2R盈利", color=color.new(color.green, 100), display=display.data_window)
+plot(r3_profit, "3R盈利", color=color.new(#00897b, 100), display=display.data_window)
 plot(max_risk_amount, "最大风险金额", color=color.new(color.orange, 100), display=display.data_window)
-
-// ==================== 提示信息 ====================
-
-if barstate.islast and is_over_account_limit
-    label.new(bar_index, high, 
-         text="⚠️ 仓位超过账户总额！\n已自动调整至账户总额", 
-         style=label.style_label_down, 
-         color=color.new(color.red, 0), 
-         textcolor=color.white, 
-         size=size.normal,
-         yloc=yloc.abovebar)
-
