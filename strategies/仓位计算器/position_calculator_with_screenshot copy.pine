@@ -83,8 +83,10 @@ r2_profit = expected_loss * 2
 r3_profit = expected_loss * 3
 
 // 盈利价位：止损关于入场的镜像（最新入场/止损只在最后一根画线时使用）
-// 做多：止损在下方 → 1R/2R/3R 在上方；做空：止损在上方 → 1R/2R/3R 在下方
-is_long = position_type == "做多"
+// 做多（止损在入场下方）：1R/2R/3R 在上方；做空（止损在入场上方）：1R/2R/3R 在下方
+is_long = stop_loss_price < entry_price
+is_short = stop_loss_price > entry_price
+position_dir = is_long ? "做多" : is_short ? "做空" : "—"
 risk_signed = entry_price - stop_loss_price
 r1_price = entry_price + risk_signed
 r2_price = entry_price + risk_signed * 2
@@ -200,8 +202,8 @@ if show_table and barstate.islast
     
     table.cell(result_table, 0, 2, "仓位方向", 
          text_color=color.white, text_size=size.small, text_halign=text.align_left)
-    table.cell(result_table, 1, 2, position_type, 
-         text_color=is_long ? color.green : color.red, 
+    table.cell(result_table, 1, 2, position_dir, 
+         text_color=is_long ? color.green : is_short ? color.red : color.gray, 
          text_size=size.small, text_halign=text.align_right)
     
     table.cell(result_table, 0, 3, "总账户大小", 
@@ -256,39 +258,31 @@ if show_table and barstate.islast
              text_size=size.small, text_halign=text.align_left)
         table.merge_cells(result_table, 0, 10, 1, 10)
         
-        // 止损比例
-        table.cell(result_table, 0, 11, "止损比例", 
+        // 止损：比例 / 金额
+        table.cell(result_table, 0, 11, "止损", 
              text_color=color.white, text_size=size.small, text_halign=text.align_left)
-        table.cell(result_table, 1, 11, str.tostring(stop_loss_ratio * 100, "#.##") + "%", 
+        table.cell(result_table, 1, 11, str.tostring(stop_loss_ratio * 100, "#.##") + "% / $" + str.tostring(expected_loss, "#,###.##"), 
              text_color=color.red, text_size=size.small, text_halign=text.align_right)
         
-        // 预计止损金额（1R 风险）
-        table.cell(result_table, 0, 12, "预计止损金额", 
+        // 1R / 2R / 3R：止盈比例 / 止盈金额
+        table.cell(result_table, 0, 12, "1R", 
              text_color=color.white, text_size=size.small, text_halign=text.align_left)
-        table.cell(result_table, 1, 12, "$" + str.tostring(expected_loss, "#,###.##"), 
-             text_color=color.red, text_size=size.small, text_halign=text.align_right)
-        
-        // 1R 盈利
-        table.cell(result_table, 0, 13, "1R 盈利", 
-             text_color=color.white, text_size=size.small, text_halign=text.align_left)
-        table.cell(result_table, 1, 13, "$" + str.tostring(r1_profit, "#,###.##"), 
+        table.cell(result_table, 1, 12, str.tostring(stop_loss_ratio * 100, "#.##") + "% / $" + str.tostring(r1_profit, "#,###.##"), 
              text_color=color.lime, text_size=size.small, text_halign=text.align_right)
         
-        // 2R 盈利
-        table.cell(result_table, 0, 14, "2R 盈利", 
+        table.cell(result_table, 0, 13, "2R", 
              text_color=color.white, text_size=size.small, text_halign=text.align_left)
-        table.cell(result_table, 1, 14, "$" + str.tostring(r2_profit, "#,###.##"), 
+        table.cell(result_table, 1, 13, str.tostring(stop_loss_ratio * 200, "#.##") + "% / $" + str.tostring(r2_profit, "#,###.##"), 
              text_color=color.green, text_size=size.small, text_halign=text.align_right)
         
-        // 3R 盈利
-        table.cell(result_table, 0, 15, "3R 盈利", 
+        table.cell(result_table, 0, 14, "3R", 
              text_color=color.white, text_size=size.small, text_halign=text.align_left)
-        table.cell(result_table, 1, 15, "$" + str.tostring(r3_profit, "#,###.##"), 
+        table.cell(result_table, 1, 14, str.tostring(stop_loss_ratio * 300, "#.##") + "% / $" + str.tostring(r3_profit, "#,###.##"), 
              text_color=#26a69a, text_size=size.small, text_halign=text.align_right)
     
     // 仓位超限提示（表格最后一行，需开启「超限时限制为账户总额」）
     if show_over_limit_warn
-        warn_row = show_trade_details ? 16 : 9
+        warn_row = show_trade_details ? 15 : 9
         table.cell(result_table, 0, warn_row, "⚠️ 仓位超过账户总额！已自动调整至账户总额", 
              text_color=color.white, bgcolor=color.new(color.red, 0), 
              text_size=size.small, text_halign=text.align_center)
