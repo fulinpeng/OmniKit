@@ -176,5 +176,4 @@ plot(position_units, "单位数量", color=color.new(color.green, 100), display=
 plot(stop_loss_ratio * 100, "止损比例(%)", color=color.new(color.red, 100), display=display.data_window)
 plot(entry_price, "入场价格", color=color.new(color.blue, 100), display=display.data_window)
 plot(stop_loss_price, "止损价格", color=color.new(color.red, 100), display=display.data_window)
-plot(max_risk_amount, "最大风险金额", color=color.new(color.orange, 100), display=display.data_window)
 
