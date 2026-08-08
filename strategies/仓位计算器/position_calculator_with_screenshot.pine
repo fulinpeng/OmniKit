@@ -12,8 +12,6 @@ account_size = input.float(10000.0, "总账户资金 ($)", minval=0.01, step=100
 max_risk_pct = input.float(1.0, "最大风险百分比 (%)", minval=0.01, maxval=100, step=0.1, group="📊 账户与风险设置", 
      tooltip="单笔亏损最大不能超过仓位的百分比")
 
-// ==================== 第二组：交易价格参数 ====================
-// 入场价格设置
 entry_price_source = input.string("当前价格", "入场价格", 
      options=["当前价格", "自定义"], group="💰 交易价格参数")
 custom_entry_price = input.float(0.0, "自定义入场价格", minval=0, step=0.01, group="💰 交易价格参数")
